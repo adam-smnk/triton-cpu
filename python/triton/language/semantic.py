@@ -1458,8 +1458,14 @@ def _str_to_dot_input_precision(input_precision, builder):
     return getattr(ir.INPUT_PRECISION, input_precision)
 
 
+def _str_to_dot_input_encoding(input_encoding, builder):
+    input_encoding = input_encoding.upper()
+    return getattr(ir.INPUT_ENCODING, input_encoding)
+
+
 def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optional[str], max_num_imprecise_acc: int,
-        out_dtype: tl.dtype, builder: ir.builder) -> tl.tensor:
+        out_dtype: tl.dtype, lhs_encoding: Optional[str], rhs_encoding: Optional[str],
+        builder: ir.builder) -> tl.tensor:
     assert lhs.type.is_block() and rhs.type.is_block()
 
     if lhs.dtype.is_fp8() and rhs.dtype.is_fp8():
@@ -1481,15 +1487,32 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
 
     input_precision = _str_to_dot_input_precision(input_precision, builder)
 
+    if lhs_encoding is None:
+        lhs_encoding = "row_major"
+
+    if rhs_encoding is None:
+        rhs_encoding = "row_major"
+
+    assert (lhs_encoding.lower(), rhs_encoding.lower()) in builder.options.allowed_dot_input_encodings, \
+        f"input encodings must be one of {builder.options.allowed_dot_input_encodings}. Got ({lhs_encoding}, {rhs_encoding})"
+
+    lhs_encoding = _str_to_dot_input_encoding(lhs_encoding, builder)
+    rhs_encoding = _str_to_dot_input_encoding(rhs_encoding, builder)
+
+    rhs_shape_scale = 1
+    if rhs_encoding == ir.INPUT_ENCODING.ROW_MAJOR_INTERLEAVED:
+        assert rhs.dtype.is_fp8() or rhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16)
+        rhs_shape_scale = 4 if rhs.dtype in (tl.int8, tl.uint8) else 2
+
     lhs_rank = len(lhs.shape)
     rhs_rank = len(rhs.shape)
     assert lhs_rank == rhs_rank == 2 or lhs_rank == rhs_rank == 3, f"Both inputs must be either 2D or 3D; (lhs: {lhs.shape} vs rhs: {rhs.shape})"
     assert lhs.shape[-1].value == rhs.shape[
-        -2].value, f"First input shape ({lhs.shape}) and second input shape {rhs.shape} are not compatible for matmul (second index of first shape ({lhs.shape[-1].value}) must be equal to first index of second shape ({rhs.shape[-2].value})"
+        -2].value * rhs_shape_scale, f"First input shape ({lhs.shape}) and second input shape {rhs.shape} are not compatible for matmul (second index of first shape ({lhs.shape[-1].value}) must be equal to first index of second shape ({rhs.shape[-2].value})"
     assert builder.codegen_fns.get("min_dot_size") is not None, "target doesn't provide lower shape bounds for dot."
     min_dot_size = builder.codegen_fns["min_dot_size"](lhs.type, rhs.type)
     assert lhs.shape[-2].value >= min_dot_size[0] and lhs.shape[-1].value >= min_dot_size[2] \
-        and rhs.shape[-1].value >= min_dot_size[1], \
+        and rhs.shape[-1].value // rhs_shape_scale >= min_dot_size[1], \
             f"Input shapes should have M >= {min_dot_size[0]}, N >= {min_dot_size[1]} and K >= {min_dot_size[2]}"
     if lhs.type.scalar.is_int():
         assert lhs.type.scalar == tl.int8, "only int8 supported!"
@@ -1506,7 +1529,7 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
         ret_scalar_ty = out_dtype
 
     M = lhs.type.shape[-2]
-    N = rhs.type.shape[-1]
+    N = rhs.type.shape[-1] // rhs_shape_scale
     K = lhs.type.shape[-1]
     B = lhs.type.shape[0] if lhs_rank == 3 else None
     ret_ty = tl.block_type(ret_scalar_ty, [B, M, N] if B else [M, N])
@@ -1526,8 +1549,9 @@ def dot(lhs: tl.tensor, rhs: tl.tensor, acc: tl.tensor, input_precision: Optiona
         if lhs.dtype.is_fp8() and rhs.dtype.is_fp8() and max_num_imprecise_acc > K:
             raise ValueError(f"max_num_imprecise_acc ({max_num_imprecise_acc}) must be <= K ({K})")
 
-    return tl.tensor(builder.create_dot(lhs.handle, rhs.handle, acc_handle, input_precision, max_num_imprecise_acc),
-                     ret_ty)
+    return tl.tensor(
+        builder.create_dot(lhs.handle, rhs.handle, acc_handle, input_precision, lhs_encoding, rhs_encoding,
+                           max_num_imprecise_acc), ret_ty)
 
 
 def _str_to_fp_type(float_format: str):

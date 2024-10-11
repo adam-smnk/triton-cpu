@@ -250,6 +250,13 @@ bool isAmxCandidate(cpu::DotOp op, bool supportInt8, bool supportFp16,
 
   LDBG("Considering candidate op: " << op);
 
+  // Check encodings.
+  if (op.getLhsEncoding() != InputEncoding::RowMajor)
+    return false;
+  if (op.getRhsEncoding() != InputEncoding::RowMajor &&
+      op.getRhsEncoding() != InputEncoding::RowMajorInterleaved)
+    return false;
+
   // Check if input and output types match available hardware capabilities.
   // If check is successful then tile element types are filled with types
   // to use in AMX operations.
@@ -631,8 +638,9 @@ LogicalResult convertCandidate(AmxDotOpCandidate &candidate,
       prepareTensorBuffer(loc, lhs, false, false, true, allocaPoint, rewriter);
 
   Value rhs = maybeCast(loc, op.getB(), candidate.rhsTileElemTy, rewriter);
-  MemBuffer rhsBuf =
-      prepareTensorBuffer(loc, rhs, true, false, true, allocaPoint, rewriter);
+  bool interleave = op.getRhsEncoding() != InputEncoding::RowMajorInterleaved;
+  MemBuffer rhsBuf = prepareTensorBuffer(loc, rhs, interleave, false, true,
+                                         allocaPoint, rewriter);
 
   Value acc = maybeCast(loc, op.getC(), candidate.accTileElemTy, rewriter);
   Value accToStore = acc;

@@ -215,6 +215,11 @@ void init_triton_ir(py::module &&m) {
       .value("BF16", ScaleDotElemType::BF16)
       .export_values();
 
+  py::enum_<InputEncoding>(m, "INPUT_ENCODING", py::module_local())
+      .value("ROW_MAJOR", InputEncoding::RowMajor)
+      .value("ROW_MAJOR_INTERLEAVED", InputEncoding::RowMajorInterleaved)
+      .export_values();
+
   py::class_<MLIRContext>(m, "context", py::module_local())
       .def(py::init<>())
       .def("printOpOnDiagnostic",
@@ -1482,9 +1487,11 @@ void init_triton_ir(py::module &&m) {
       .def("create_dot",
            [](TritonOpBuilder &self, mlir::Value &a, mlir::Value &b,
               mlir::Value &c, InputPrecision inputPrecision,
+              InputEncoding lhsEncoding, InputEncoding rhsEncoding,
               int maxNumImpreciseAcc) -> mlir::Value {
              return self.create<DotOp>(c.getType(), a, b, c, inputPrecision,
-                                       maxNumImpreciseAcc);
+                                       maxNumImpreciseAcc, lhsEncoding,
+                                       rhsEncoding);
            })
       .def("create_dot_scaled",
            [](TritonOpBuilder &self, mlir::Value &lhs,

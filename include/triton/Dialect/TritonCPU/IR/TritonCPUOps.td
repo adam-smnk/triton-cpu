@@ -180,13 +180,16 @@ def TTC_DotOp : TTC_Op<"dot", [Pure,
       TTC_Vector:$b,
       TTC_Vector:$c,
       DefaultValuedAttr<TT_InputPrecisionAttr, "::mlir::triton::InputPrecision::IEEE">:$inputPrecision,
-      DefaultValuedAttr<I32Attr, "0">:$maxNumImpreciseAcc
+      DefaultValuedAttr<I32Attr, "0">:$maxNumImpreciseAcc,
+      DefaultValuedAttr<TT_InputEncodingAttr, "::mlir::triton::InputEncoding::RowMajor">:$lhsEncoding,
+      DefaultValuedAttr<TT_InputEncodingAttr, "::mlir::triton::InputEncoding::RowMajor">:$rhsEncoding
     );
 
     let results = (outs TTC_Vector:$d);
 
     let assemblyFormat = [{
-      $a`,` $b`,` $c (`,` `inputPrecision` `=` $inputPrecision^)? attr-dict `:`
+      $a`,` $b`,` $c (`,` `inputPrecision` `=` $inputPrecision^)?
+      (`,` `lhsEncoding` `=` $lhsEncoding^)? (`,` `rhsEncoding` `=` $rhsEncoding^)? attr-dict `:`
       type($a) `*` type($b) `->` type($d)
     }];
 }

@@ -53,6 +53,29 @@ struct DotOpConversion : public OpConversionPattern<cpu::DotOp> {
     VectorType bType = cast<VectorType>(b.getType());
     VectorType cType = cast<VectorType>(c.getType());
 
+    if (op.getRhsEncoding() == InputEncoding::RowMajorInterleaved) {
+      int64_t scale = 32 / bType.getElementTypeBitWidth();
+      SmallVector<int64_t> newBShape(
+          {bType.getDimSize(0) * scale, bType.getDimSize(1) / scale});
+      VectorType newBType = bType.cloneWith(newBShape, bType.getElementType());
+      Value newB = rewriter.create<arith::ConstantOp>(
+          loc, rewriter.getZeroAttr(newBType));
+
+      assert(scale == 2 || scale == 4);
+      for (int64_t i = 0; i < bType.getDimSize(0); ++i) {
+        Value origRow = rewriter.create<vector::ExtractOp>(loc, b, i);
+        auto rows = deinterleave(loc, origRow, rewriter);
+        if (scale == 4)
+          rows = deinterleave(loc, rows, rewriter);
+        for (int64_t j = 0; j < scale; ++j)
+          newB = rewriter.create<vector::InsertOp>(loc, rows[j], newB,
+                                                   i * scale + j);
+      }
+
+      b = newB;
+      bType = newBType;
+    }
+
     uint32_t rank = aType.getRank();
     if (rank == 2) {
       auto aMap = AffineMap::getMultiDimMapWithTargets(3, {0, 2}, ctx);

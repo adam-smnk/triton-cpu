@@ -63,8 +63,9 @@ struct DotOpConversion : public OpConversionPattern<triton::DotOp> {
            (aType.getRank() == 2 || aType.getRank() == 3) &&
            "Mixed ranks, not 2d or 3d matmul, unknown type of op");
 
-    rewriter.replaceOpWithNewOp<cpu::DotOp>(op, a, b, c, op.getInputPrecision(),
-                                            op.getMaxNumImpreciseAcc());
+    rewriter.replaceOpWithNewOp<cpu::DotOp>(
+        op, a, b, c, op.getInputPrecision(), op.getMaxNumImpreciseAcc(),
+        op.getLhsEncoding(), op.getRhsEncoding());
     return success();
   }
 };

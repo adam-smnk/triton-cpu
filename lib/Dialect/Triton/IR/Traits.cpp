@@ -1,4 +1,4 @@
-#include "triton/Dialect/Triton/IR/Traits.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <numeric>
 
@@ -193,4 +193,48 @@ OpTrait::impl::verifySameLoadStoreOperandsAndResultShape(Operation *op) {
              << "requires the same shape for all operands and results";
 
   return verifySameLoadStoreOperandsShape(op);
+}
+
+LogicalResult OpTrait::impl::verifyDotLikeOp(Operation *op) {
+  if (op->getNumOperands() < 3)
+    return op->emitOpError("expected at least 3 operands");
+  auto aTy = cast<ShapedType>(op->getOperand(0).getType());
+  auto bTy = cast<ShapedType>(op->getOperand(1).getType());
+  auto cTy = cast<ShapedType>(op->getOperand(2).getType());
+  auto aShape = aTy.getShape();
+  SmallVector<int64_t> bShape{bTy.getShape()};
+  auto cShape = cTy.getShape();
+  if (auto attr = dyn_cast_or_null<triton::InputEncodingAttr>(
+          op->getAttr("rhsEncoding"))) {
+    if (attr.getValue() == triton::InputEncoding::RowMajorInterleaved) {
+      int64_t scale = 32 / bTy.getElementTypeBitWidth();
+      bShape[0] *= scale;
+      bShape[1] /= scale;
+    }
+  }
+  // Check if all 3d or all 2d
+  if (aShape.size() != 2 && aShape.size() != 3)
+    return op->emitOpError("expected operands to be 2d or 3d");
+  if (aShape.size() != bShape.size() || aShape.size() != cShape.size())
+    return op->emitOpError("expected all operands to have the same rank");
+  // Check if the first two operands share a common dimension
+  // TODO: enable back with an interface to support scaled dot.
+  // if (aShape[aShape.size() - 1] != bShape[aShape.size() - 2])
+  //   return op->emitOpError("expected the last dimension of the first
+  //   operand "
+  //                          "to be equal to the second-to-last dimension of
+  //                          " "the second operand");
+  // Check the batch dimension
+  if (aShape.size() == 3 && (aShape[0] != cShape[0] || bShape[0] != cShape[0]))
+    return op->emitOpError("expected the first dimension of the first "
+                           "operand to be equal to the first dimension of "
+                           "the result");
+  // Check the output shape
+  if (cShape[cShape.size() - 2] != aShape[aShape.size() - 2] ||
+      cShape[cShape.size() - 1] != bShape[aShape.size() - 1])
+    return op->emitOpError(
+        "expected the output shape to be the concatenation of the last "
+        "dimension of the first operand and the last dimension of the "
+        "second ");
+  return success();
 }

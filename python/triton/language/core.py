@@ -1608,7 +1608,7 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
 
 @builtin
 def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_imprecise_acc=None, out_dtype=float32,
-        _builder=None):
+        lhs_encoding=None, rhs_encoding=None, _builder=None):
     """
     Returns the matrix product of two blocks.
 
@@ -1640,7 +1640,10 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
     input_precision = _constexpr_to_value(input_precision)
     out_dtype = _constexpr_to_value(out_dtype)
     max_num_imprecise_acc = _constexpr_to_value(max_num_imprecise_acc)
-    return semantic.dot(input, other, acc, input_precision, max_num_imprecise_acc, out_dtype, _builder)
+    lhs_encoding = _constexpr_to_value(lhs_encoding)
+    rhs_encoding = _constexpr_to_value(rhs_encoding)
+    return semantic.dot(input, other, acc, input_precision, max_num_imprecise_acc, out_dtype, lhs_encoding,
+                        rhs_encoding, _builder)
 
 
 @builtin

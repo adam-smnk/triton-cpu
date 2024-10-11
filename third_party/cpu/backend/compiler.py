@@ -41,6 +41,8 @@ class CPUOptions:
     supported_fp8_dtypes: Tuple[str] = ("fp8e5", "fp8e5b16", "fp8e4nv")
     deprecated_fp8_dtypes: Tuple[str] = ()
     allowed_dot_input_precisions: Tuple[str] = ("ieee", "tf32", "tf32x3")
+    allowed_dot_input_encodings: Tuple[Tuple[str]] = (("row_major", "row_major"), ("row_major",
+                                                                                   "row_major_interleaved"))
     allow_fp8e4nv: bool = True
     allow_fp8e4b15: bool = True
     enable_fp_fusion: bool = True

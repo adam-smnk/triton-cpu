@@ -100,6 +100,12 @@ bool isFmaCandidate(cpu::DotOp op, FmaDotOpCandidate &candidate) {
 
   LDBG("Considering candidate op: " << op);
 
+  // Check encodings.
+  if (op.getLhsEncoding() != InputEncoding::RowMajor)
+    return false;
+  if (op.getRhsEncoding() != InputEncoding::RowMajor)
+    return false;
+
   // Check if input and output types match available hardware capabilities.
   // If check is successful then effective element types are assigned to the
   // candidate.

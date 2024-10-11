@@ -650,7 +650,10 @@ def TT_DotOp : TT_Op<"dot", [Pure,
       TT_FpIntTensor:$b,
       TT_FpIntTensor:$c,
       DefaultValuedAttr<TT_InputPrecisionAttr, "::mlir::triton::InputPrecision::IEEE">:$inputPrecision,
-      DefaultValuedAttr<I32Attr, "0">:$maxNumImpreciseAcc
+      DefaultValuedAttr<I32Attr, "0">:$maxNumImpreciseAcc,
+      // TODO: use aEncoding, bEncoding
+      DefaultValuedAttr<TT_InputEncodingAttr, "::mlir::triton::InputEncoding::RowMajor">:$lhsEncoding,
+      DefaultValuedAttr<TT_InputEncodingAttr, "::mlir::triton::InputEncoding::RowMajor">:$rhsEncoding
     );
 
     let results = (outs TT_FpIntTensor:$d);
@@ -658,7 +661,8 @@ def TT_DotOp : TT_Op<"dot", [Pure,
     // attr-dict prints enums as integers.  To get inputPrecision printed as a
     // string, we need to specify it explicitly.
     let assemblyFormat = [{
-      $a`,` $b`,` $c (`,` `inputPrecision` `=` $inputPrecision^)? attr-dict `:`
+      $a`,` $b`,` $c (`,` `inputPrecision` `=` $inputPrecision^)?
+      (`,` `lhsEncoding` `=` $lhsEncoding^)? (`,` `rhsEncoding` `=` $rhsEncoding^)? attr-dict `:`
       type($a) `*` type($b) `->` type($d)
     }];
     let hasVerifier = 1;

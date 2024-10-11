@@ -134,4 +134,14 @@ def TT_ScaleDotElemTypeAttr : I32EnumAttr<
   let cppNamespace = "::mlir::triton";
 }
 
+// InputEncoding
+def TT_InputEncodingAttr : I32EnumAttr<
+    "InputEncoding", "",
+    [
+      I32EnumAttrCase<"RowMajor", 0, "row_major">,
+      I32EnumAttrCase<"RowMajorInterleaved", 1, "row_major_interleaved">,
+    ]>{
+  let cppNamespace = "::mlir::triton";
+}
+
 #endif
