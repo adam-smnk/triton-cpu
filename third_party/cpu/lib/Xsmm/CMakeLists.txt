@@ -1,4 +1,5 @@
 add_triton_library(TritonCPUXsmm
+    ConvertGemmToBrgemm.cpp
     ConvertVectorToXsmm.cpp
     VnniUtils.cpp
     ValueUtils.cpp

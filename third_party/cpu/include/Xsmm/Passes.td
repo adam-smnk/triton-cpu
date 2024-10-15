@@ -14,4 +14,15 @@ def ConvertVectorToXsmm : Pass<"triton-cpu-convert-vector-to-xsmm", "mlir::Modul
 			                    "LLVM::LLVMDialect"];
 }
 
+def ConvertGemmToBrgemm : Pass<"triton-cpu-convert-gemm-to-brgemm", "mlir::ModuleOp"> {
+ let summary = "Convert GEMM to BRGEMM operation";
+ let description = [{
+   Convert GEMM operations to BRGEMM operations.
+ }];
+ let dependentDialects = ["func::FuncDialect",
+                          "memref::MemRefDialect",
+                          "vector::VectorDialect",
+			                    "LLVM::LLVMDialect"];
+}
+
 #endif
