@@ -12,10 +12,12 @@ add_triton_library(TritonCPUXsmm
     xsmm
 
     LINK_LIBS PUBLIC
+    TritonCPUIR
     MLIRIR
     MLIRPass
     MLIRVectorDialect
     MLIRMemRefDialect
+    MLIRTensorDialect
     MLIRFuncDialect
     MLIRLLVMDialect
     MLIRInferTypeOpInterface

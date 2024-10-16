@@ -175,8 +175,9 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
     std::reverse(lhsStrides.begin(), lhsStrides.end());
     SmallVector<Value> lhsOffsets = lhsBlockPtr.getOffsets();
     lhsOffsets.push_back(zero);
-    SmallVector<int32_t> lhsTensorShape{static_cast<int32_t>(resShape[0]),
-                                        numTiles, *lhsStepReduction};
+    SmallVector<int32_t> lhsTensorShape{
+        static_cast<int32_t>(resShape[0]), static_cast<int32_t>(numTiles),
+        static_cast<int32_t>(*lhsStepReduction)};
     SmallVector<int32_t> lhsOrder{2, 1, 0};
     auto newLhsPtr = rewriter.create<triton::MakeTensorPtrOp>(
         loc, lhsBlockPtr.getBase(), lhsShape, lhsStrides, lhsOffsets,
@@ -195,7 +196,8 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
     SmallVector<Value> rhsOffsets{zero};
     for (auto offset : rhsBlockPtr.getOffsets())
       rhsOffsets.push_back(offset);
-    SmallVector<int32_t> rhsTensorShape{numTiles, *rhsStepReduction,
+    SmallVector<int32_t> rhsTensorShape{static_cast<int32_t>(numTiles),
+                                        static_cast<int32_t>(*rhsStepReduction),
                                         static_cast<int32_t>(resShape[1])};
     SmallVector<int32_t> rhsOrder{2, 1, 0};
     auto newRhsPtr = rewriter.create<triton::MakeTensorPtrOp>(
@@ -213,12 +215,12 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
                                         lhsTensorShape.end()};
     auto vecA = rewriter.create<UnrealizedConversionCastOp>(
         loc, VectorType::get(lhsVectorShape, res.getType().getElementType()),
-        matA);
+        ValueRange{matA});
     SmallVector<int64_t> rhsVectorShape{rhsTensorShape.begin(),
                                         rhsTensorShape.end()};
     auto vecB = rewriter.create<UnrealizedConversionCastOp>(
         loc, VectorType::get(rhsVectorShape, res.getType().getElementType()),
-        matB);
+        ValueRange{matB});
 
     return success();
   }
