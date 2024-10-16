@@ -85,6 +85,7 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
     if (!forOp || !blockArg)
       return rewriter.notifyMatchFailure(dotOp, "not a reduction loop");
 
+    // TODO: Allow dynamic ranges.
     auto loopUB = getConstantIntValue(forOp.getUpperBound());
     auto loopLB = getConstantIntValue(forOp.getLowerBound());
     auto loopStep = getConstantIntValue(forOp.getStep());
@@ -100,7 +101,7 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
                                          "expects unused induction variable");
 
     // The subgraph should a simple reduction loop containing a GEMM operation.
-    // The validate presence of the following chain:
+    // Validate presence of the following chain:
     //   iter_arg -> contraction -> yield
     // and that there are no other users.
     TypedValue<RankedTensorType> res = dotOp.getD();
@@ -113,6 +114,8 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
     if (!loadMatA || !loadMatB)
       return rewriter.notifyMatchFailure(dotOp, "expect GEMM input loads");
 
+    // Constrain input pointers to the following subgraph:
+    //   iter_arg -> (load, increment) -> yield
     BlockArgument lhsArg = dyn_cast<BlockArgument>(loadMatA.getPtr());
     BlockArgument rhsArg = dyn_cast<BlockArgument>(loadMatB.getPtr());
     if (!lhsArg || std::distance(lhsArg.use_begin(), lhsArg.use_end()) != 2 ||
@@ -122,11 +125,14 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
     auto iterArgs = llvm::to_vector(forOp.getInitArgs());
     auto numIvs = forOp.getNumInductionVars();
 
-    auto lhsBlockPtr = dyn_cast<triton::MakeTensorPtrOp>(
-        iterArgs[lhsArg.getArgNumber() - numIvs]);
-    auto rhsBlockPtr = dyn_cast<triton::MakeTensorPtrOp>(
-        iterArgs[rhsArg.getArgNumber() - numIvs]);
-    if (!lhsBlockPtr || !rhsBlockPtr)
+    // Input sources should be block pointers.
+    // TODO: Account for transposed GEMM operands.
+    auto lhsBlockPtr = dyn_cast_or_null<triton::MakeTensorPtrOp>(
+        iterArgs[lhsArg.getArgNumber() - numIvs].getDefiningOp());
+    auto rhsBlockPtr = dyn_cast_or_null<triton::MakeTensorPtrOp>(
+        iterArgs[rhsArg.getArgNumber() - numIvs].getDefiningOp());
+    if (!lhsBlockPtr || lhsBlockPtr.getOrder() != ArrayRef<int32_t>{1, 0} ||
+        !rhsBlockPtr || rhsBlockPtr.getOrder() != ArrayRef<int32_t>{1, 0})
       return rewriter.notifyMatchFailure(dotOp, "expected block pointers");
 
     auto yields = *forOp.getYieldedValuesMutable();
@@ -154,73 +160,43 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
         !rhsStepParallel || *rhsStepParallel != 0)
       return rewriter.notifyMatchFailure(dotOp, "invalid rhs increments");
 
+    // Collapse the loop and create equivalent BRGEMM operation.
     OpBuilder::InsertionGuard g(rewriter);
     rewriter.setInsertionPointAfter(forOp);
 
-    // TODO: Add boundary checks.
     int64_t numTiles = (*loopUB - *loopLB) * (*loopStep);
-    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    Value tilesConst = rewriter.create<arith::ConstantIndexOp>(loc, numTiles);
-    Value lhsReductionConst =
-        rewriter.create<arith::ConstantIndexOp>(loc, *lhsStepReduction);
-
-    SmallVector<Value> lhsShape{lhsBlockPtr.getShape()[0], tilesConst,
-                                lhsReductionConst};
-    SmallVector<Value> lhsStrides{lhsBlockPtr.getStrides()[1]};
-    for (unsigned i = lhsShape.size() - 1; i > 0; --i) {
-      lhsStrides.push_back(
-          rewriter.create<arith::MulIOp>(loc, lhsStrides.back(), lhsShape[i]));
-    }
-    std::reverse(lhsStrides.begin(), lhsStrides.end());
-    SmallVector<Value> lhsOffsets = lhsBlockPtr.getOffsets();
-    lhsOffsets.push_back(zero);
-    SmallVector<int32_t> lhsTensorShape{
-        static_cast<int32_t>(resShape[0]), static_cast<int32_t>(numTiles),
-        static_cast<int32_t>(*lhsStepReduction)};
-    SmallVector<int32_t> lhsOrder{2, 1, 0};
+    auto lhsResType =
+        RankedTensorType::get({resShape[0], (*lhsStepReduction) * numTiles},
+                              res.getType().getElementType());
     auto newLhsPtr = rewriter.create<triton::MakeTensorPtrOp>(
-        loc, lhsBlockPtr.getBase(), lhsShape, lhsStrides, lhsOffsets,
-        lhsTensorShape, lhsOrder);
-
-    Value rhsReductionConst =
-        rewriter.create<arith::ConstantIndexOp>(loc, *rhsStepReduction);
-    SmallVector<Value> rhsShape{tilesConst, rhsReductionConst,
-                                rhsBlockPtr.getShape().back()};
-    SmallVector<Value> rhsStrides{rhsBlockPtr.getStrides().back()};
-    for (unsigned i = rhsShape.size() - 1; i > 0; --i) {
-      rhsStrides.push_back(
-          rewriter.create<arith::MulIOp>(loc, rhsStrides.back(), rhsShape[i]));
-    }
-    std::reverse(rhsStrides.begin(), rhsStrides.end());
-    SmallVector<Value> rhsOffsets{zero};
-    for (auto offset : rhsBlockPtr.getOffsets())
-      rhsOffsets.push_back(offset);
-    SmallVector<int32_t> rhsTensorShape{static_cast<int32_t>(numTiles),
-                                        static_cast<int32_t>(*rhsStepReduction),
-                                        static_cast<int32_t>(resShape[1])};
-    SmallVector<int32_t> rhsOrder{2, 1, 0};
+        loc, PointerType::get(lhsResType, 1), lhsBlockPtr.getBase(),
+        lhsBlockPtr.getShape(), lhsBlockPtr.getStrides(),
+        lhsBlockPtr.getOffsets(), lhsBlockPtr.getOrderAttr());
+    auto rhsResType =
+        RankedTensorType::get({(*rhsStepReduction) * numTiles, resShape[1]},
+                              res.getType().getElementType());
     auto newRhsPtr = rewriter.create<triton::MakeTensorPtrOp>(
-        loc, rhsBlockPtr.getBase(), rhsShape, rhsStrides, rhsOffsets,
-        rhsTensorShape, rhsOrder);
+        loc, PointerType::get(rhsResType, 1), rhsBlockPtr.getBase(),
+        rhsBlockPtr.getShape(), rhsBlockPtr.getStrides(),
+        rhsBlockPtr.getOffsets(), rhsBlockPtr.getOrderAttr());
 
     auto matA = rewriter.create<triton::LoadOp>(
-        loc, newLhsPtr, loadMatA.getCache(), loadMatA.getEvict(),
-        loadMatA.getIsVolatile());
+        loc, newLhsPtr, loadMatA.getBoundaryCheck(), loadMatA.getPadding(),
+        loadMatA.getCache(), loadMatA.getEvict(), loadMatA.getIsVolatile());
     auto matB = rewriter.create<triton::LoadOp>(
-        loc, newRhsPtr, loadMatB.getCache(), loadMatB.getEvict(),
-        loadMatB.getIsVolatile());
+        loc, newRhsPtr, loadMatB.getBoundaryCheck(), loadMatB.getPadding(),
+        loadMatB.getCache(), loadMatB.getEvict(), loadMatB.getIsVolatile());
 
-    SmallVector<int64_t> lhsVectorShape{lhsTensorShape.begin(),
-                                        lhsTensorShape.end()};
-    auto vecA = rewriter.create<UnrealizedConversionCastOp>(
-        loc, VectorType::get(lhsVectorShape, res.getType().getElementType()),
-        ValueRange{matA});
-    SmallVector<int64_t> rhsVectorShape{rhsTensorShape.begin(),
-                                        rhsTensorShape.end()};
-    auto vecB = rewriter.create<UnrealizedConversionCastOp>(
-        loc, VectorType::get(rhsVectorShape, res.getType().getElementType()),
-        ValueRange{matB});
+    // SmallVector<int64_t> lhsVectorShape{lhsTensorShape.begin(),
+    //                                     lhsTensorShape.end()};
+    // auto vecA = rewriter.create<UnrealizedConversionCastOp>(
+    //     loc, VectorType::get(lhsVectorShape, res.getType().getElementType()),
+    //     ValueRange{matA});
+    // SmallVector<int64_t> rhsVectorShape{rhsTensorShape.begin(),
+    //                                     rhsTensorShape.end()};
+    // auto vecB = rewriter.create<UnrealizedConversionCastOp>(
+    //     loc, VectorType::get(rhsVectorShape, res.getType().getElementType()),
+    //     ValueRange{matB});
 
     return success();
   }
