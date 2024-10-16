@@ -1,6 +1,7 @@
 add_triton_library(TritonCPUXsmm
     ConvertGemmToBrgemm.cpp
     ConvertVectorToXsmm.cpp
+    VectorizeLinalg.cpp
     VnniUtils.cpp
     ValueUtils.cpp
     XsmmEnum.cpp
@@ -15,9 +16,15 @@ add_triton_library(TritonCPUXsmm
     TritonCPUIR
     MLIRIR
     MLIRPass
+    MLIRLinalgDialect
+    MLIRLinalgTransforms
     MLIRVectorDialect
+    MLIRVectorTransforms
     MLIRMemRefDialect
     MLIRTensorDialect
+    MLIRArithDialect
+    MLIRMathDialect
+    MLIRSCFDialect
     MLIRFuncDialect
     MLIRLLVMDialect
     MLIRInferTypeOpInterface
