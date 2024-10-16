@@ -8,17 +8,13 @@
 
 #include "cpu/include/Xsmm/Passes.h"
 
-#include "ValueUtils.h"
-#include "VnniUtils.h"
-#include "XsmmUtils.h"
-
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
-#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
@@ -35,7 +31,6 @@
 #include <utility>
 
 using namespace mlir;
-using namespace mlir::vector;
 using namespace mlir::func;
 using namespace mlir::triton;
 using namespace mlir::triton::cpu;
@@ -65,7 +60,9 @@ namespace {
 // into:
 //   %A = tt.make_tensor_ptr %base_ptr0 : tensor<M x TILES x k>
 //   %B = tt.make_tensor_ptr %base_ptr1 : tensor<TILES x k x N>
-//   %res = BRGEMM %A, %B, %init_val
+//   %res0 = BRGEMM %A, %B, %init_val
+//   %res1 = tt.advance %A, [0, ((%ub - %lb) / %step)]
+//   %res2 = tt.advance %B, [((%ub - %lb) / %step), 0]
 struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -81,9 +78,12 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
       return rewriter.notifyMatchFailure(dotOp, "expects 2D GEMM");
 
     auto forOp = dyn_cast<scf::ForOp>(dotOp->getParentOp());
-    BlockArgument blockArg = dyn_cast<BlockArgument>(acc);
-    if (!forOp || !blockArg)
+    BlockArgument accArg = dyn_cast<BlockArgument>(acc);
+    if (!forOp || !accArg)
       return rewriter.notifyMatchFailure(dotOp, "not a reduction loop");
+    auto iterArgs = llvm::to_vector(forOp.getInitArgs());
+    if (iterArgs.size() != 3)
+      return rewriter.notifyMatchFailure(dotOp, "invalid number of iter_args");
 
     // TODO: Allow dynamic ranges.
     auto loopUB = getConstantIntValue(forOp.getUpperBound());
@@ -122,7 +122,6 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
         !rhsArg || std::distance(rhsArg.use_begin(), rhsArg.use_end()) != 2)
       return rewriter.notifyMatchFailure(dotOp, "expect iter_args pointers");
 
-    auto iterArgs = llvm::to_vector(forOp.getInitArgs());
     auto numIvs = forOp.getNumInductionVars();
 
     // Input sources should be block pointers.
@@ -135,6 +134,8 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
         !rhsBlockPtr || rhsBlockPtr.getOrder() != ArrayRef<int32_t>{1, 0})
       return rewriter.notifyMatchFailure(dotOp, "expected block pointers");
 
+    // Check for pointer increments and validate their steps.
+    // Each input is expected to advance only in its reduction dimension.
     auto yields = *forOp.getYieldedValuesMutable();
     auto lhsAdvanceOp = yields[lhsArg.getArgNumber() - numIvs]
                             .get()
@@ -164,7 +165,8 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
     OpBuilder::InsertionGuard g(rewriter);
     rewriter.setInsertionPointAfter(forOp);
 
-    int64_t numTiles = (*loopUB - *loopLB) * (*loopStep);
+    // Create new block pointers spanning the whole reduction dimension.
+    int64_t numTiles = (*loopUB - *loopLB) / (*loopStep);
     auto lhsResType =
         RankedTensorType::get({resShape[0], (*lhsStepReduction) * numTiles},
                               res.getType().getElementType());
@@ -180,6 +182,9 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
         rhsBlockPtr.getShape(), rhsBlockPtr.getStrides(),
         rhsBlockPtr.getOffsets(), rhsBlockPtr.getOrderAttr());
 
+    // Load the new tensors.
+    // Only the result shape is updated, all the source metadata remains
+    // unchanged.
     auto matA = rewriter.create<triton::LoadOp>(
         loc, newLhsPtr, loadMatA.getBoundaryCheck(), loadMatA.getPadding(),
         loadMatA.getCache(), loadMatA.getEvict(), loadMatA.getIsVolatile());
@@ -187,16 +192,73 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
         loc, newRhsPtr, loadMatB.getBoundaryCheck(), loadMatB.getPadding(),
         loadMatB.getCache(), loadMatB.getEvict(), loadMatB.getIsVolatile());
 
-    // SmallVector<int64_t> lhsVectorShape{lhsTensorShape.begin(),
-    //                                     lhsTensorShape.end()};
-    // auto vecA = rewriter.create<UnrealizedConversionCastOp>(
-    //     loc, VectorType::get(lhsVectorShape, res.getType().getElementType()),
-    //     ValueRange{matA});
-    // SmallVector<int64_t> rhsVectorShape{rhsTensorShape.begin(),
-    //                                     rhsTensorShape.end()};
-    // auto vecB = rewriter.create<UnrealizedConversionCastOp>(
-    //     loc, VectorType::get(rhsVectorShape, res.getType().getElementType()),
-    //     ValueRange{matB});
+    // Split reduction dimension into tiles.
+    // The number of tiles represents the batch dimension.
+    auto expandedTypeA =
+        RankedTensorType::get({resShape[0], numTiles, *lhsStepReduction},
+                              lhsResType.getElementType());
+    auto reassocA =
+        getReassociationIndicesForReshape(lhsResType, expandedTypeA);
+    auto expandedTypeB =
+        RankedTensorType::get({numTiles, *rhsStepReduction, resShape[1]},
+                              rhsResType.getElementType());
+    auto reassocB =
+        getReassociationIndicesForReshape(rhsResType, expandedTypeB);
+    if (!reassocA || !reassocB)
+      return rewriter.notifyMatchFailure(
+          dotOp, "could not reassociate GEMM dims to BRGEMM");
+
+    auto expandA = rewriter.create<tensor::ExpandShapeOp>(loc, expandedTypeA,
+                                                          matA, *reassocA);
+    auto expandB = rewriter.create<tensor::ExpandShapeOp>(loc, expandedTypeB,
+                                                          matB, *reassocB);
+
+    // Construct BRGEMM operation.
+    // Generic is used as matrix A lacks transposition to match linalg named op.
+    // TODO: Should the input operands be normalized with tranposes?
+    auto mapA = AffineMap::getMultiDimMapWithTargets(4, {1, 0, 3}, ctx);
+    auto mapB = AffineMap::getMultiDimMapWithTargets(4, {0, 3, 2}, ctx);
+    auto mapC = AffineMap::getMultiDimMapWithTargets(4, {1, 2}, ctx);
+    unsigned accIdx = accArg.getArgNumber() - numIvs;
+    auto brgemmOp = rewriter.create<linalg::GenericOp>(
+        loc, res.getType(), /*ins=*/ValueRange{expandA, expandB},
+        /*outs=*/ValueRange{iterArgs[accIdx]},
+        ArrayRef<AffineMap>{mapA, mapB, mapC},
+        ArrayRef<mlir::utils::IteratorType>{
+            mlir::utils::IteratorType::reduction,
+            mlir::utils::IteratorType::parallel,
+            mlir::utils::IteratorType::parallel,
+            mlir::utils::IteratorType::reduction},
+        /*doc=*/"", /*libraryCall=*/"",
+        [](OpBuilder &builder, Location loc, ValueRange args) {
+          Value res;
+          if (isa<FloatType>(args[2].getType())) {
+            Value mul = builder.create<arith::MulFOp>(loc, args[0], args[1]);
+            res = builder.create<arith::AddFOp>(loc, args[2], mul);
+          } else {
+            Value mul = builder.create<arith::MulIOp>(loc, args[0], args[1]);
+            res = builder.create<arith::AddIOp>(loc, args[2], mul);
+          }
+          builder.create<linalg::YieldOp>(loc, res);
+        });
+
+    // Increment the base pointers such that the whole loop can be removed.
+    Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value reductionStepConst =
+        rewriter.create<arith::ConstantIndexOp>(loc, *lhsStepReduction);
+    Value numIterConst = rewriter.create<arith::ConstantIndexOp>(loc, numTiles);
+    Value reductionOffset =
+        rewriter.create<arith::MulIOp>(loc, reductionStepConst, numIterConst);
+    auto advanceA = rewriter.create<triton::AdvanceOp>(
+        loc, lhsBlockPtr.getResult().getType(), lhsBlockPtr,
+        ValueRange{zero, reductionOffset});
+    auto advanceB = rewriter.create<triton::AdvanceOp>(
+        loc, rhsBlockPtr.getResult().getType(), rhsBlockPtr,
+        ValueRange{reductionOffset, zero});
+
+    rewriter.replaceOp(forOp,
+                       ValueRange{brgemmOp.getResult(0), advanceA.getResult(),
+                                  advanceB.getResult()});
 
     return success();
   }

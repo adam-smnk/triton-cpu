@@ -19,12 +19,10 @@ def ConvertGemmToBrgemm : Pass<"triton-cpu-convert-gemm-to-brgemm", "mlir::Modul
  let description = [{
    Convert GEMM operations to BRGEMM operations.
  }];
- let dependentDialects = ["func::FuncDialect",
-                          "memref::MemRefDialect",
+ let dependentDialects = ["linalg::LinalgDialect",
+                          "func::FuncDialect",
                           "tensor::TensorDialect",
-                          "mlir::triton::TritonDialect",
-                          "vector::VectorDialect",
-                          "LLVM::LLVMDialect"];
+                          "mlir::triton::TritonDialect"];
 }
 
 #endif
