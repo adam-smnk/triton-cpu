@@ -151,9 +151,6 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_convert_gemm_to_brgemm", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertGemmToBrgemm());
   });
-  m.def("add_vectorize_linalg", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::cpu::createVectorizeLinalg());
-  });
 }
 
 void init_triton_cpu(py::module &&m) {

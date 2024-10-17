@@ -25,17 +25,4 @@ def ConvertGemmToBrgemm : Pass<"triton-cpu-convert-gemm-to-brgemm", "mlir::Modul
                           "mlir::triton::TritonDialect"];
 }
 
-def VectorizeLinalg : Pass<"triton-cpu-vectorize-linalg", "ModuleOp"> {
-  let summary = "Vectorize linalg ops.";
-  let description = [{
-    Convert Linalg ops to vectorized representation.
-  }];
-  let dependentDialects = ["scf::SCFDialect",
-                           "memref::MemRefDialect",
-                           "tensor::TensorDialect",
-                           "math::MathDialect",
-                           "arith::ArithDialect",
-                           "vector::VectorDialect"];
-}
-
 #endif
