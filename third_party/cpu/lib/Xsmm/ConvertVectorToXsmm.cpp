@@ -17,6 +17,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinDialect.h"
@@ -47,13 +48,28 @@ namespace cpu {
 
 namespace {
 
-static Value getMemrefSource(PatternRewriter &rewriter, Operation *op,
-                             TypedValue<Type> operand) {
+static TypedValue<MemRefType> getMemrefSource(PatternRewriter &rewriter,
+                                              Operation *op,
+                                              TypedValue<Type> operand) {
   Location loc = op->getLoc();
   MLIRContext *ctx = op->getContext();
 
   if (isa<MemRefType>(operand.getType()))
-    return operand;
+    return cast<TypedValue<MemRefType>>(operand);
+
+  if (auto castOp =
+          dyn_cast_or_null<vector::ShapeCastOp>(operand.getDefiningOp())) {
+    TypedValue<MemRefType> buffer =
+        getMemrefSource(rewriter, op, castOp.getSource());
+
+    MemRefType srcTy = buffer.getType();
+    auto resTy = castOp.getResultVectorType();
+    auto reassoc = getReassociationIndicesForReshape(srcTy, resTy);
+    assert(reassoc && "could not reassociate cast dims");
+
+    return rewriter.create<memref::ExpandShapeOp>(loc, resTy.getShape(), buffer,
+                                                  *reassoc);
+  }
 
   if (auto readOp =
           dyn_cast_or_null<vector::TransferReadOp>(operand.getDefiningOp())) {
@@ -98,9 +114,9 @@ static Value getMemrefSource(PatternRewriter &rewriter, Operation *op,
 //   consumer(%0)
 //
 // This rewrite should be used as a part of contraction to memref conversion.
-static std::optional<Value> hoistAccumulationBuffer(PatternRewriter &rewriter,
-                                                    Operation *op,
-                                                    TypedValue<Type> operand) {
+static std::optional<TypedValue<MemRefType>>
+hoistAccumulationBuffer(PatternRewriter &rewriter, Operation *op,
+                        TypedValue<Type> operand) {
   Location loc = op->getLoc();
 
   // Expect the contraction op to still be in vector abstraction.
@@ -126,7 +142,8 @@ static std::optional<Value> hoistAccumulationBuffer(PatternRewriter &rewriter,
   // Create a buffer outside the loop.
   // In scf.for, iter_args are positioned after induction variable.
   unsigned argIdx = blockArg.getArgNumber() - forOp.getNumInductionVars();
-  Value accBuf = getMemrefSource(rewriter, forOp, forOp.getInitArgs()[argIdx]);
+  TypedValue<MemRefType> accBuf =
+      getMemrefSource(rewriter, forOp, forOp.getInitArgs()[argIdx]);
 
   // For simplicity, feed the iter_arg directly into loop yield terminator.
   // Canonicalizer will folded them away later.
@@ -138,8 +155,7 @@ static std::optional<Value> hoistAccumulationBuffer(PatternRewriter &rewriter,
   rewriter.setInsertionPointAfter(forOp);
 
   Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  SmallVector<Value> indices(dyn_cast<MemRefType>(accBuf.getType()).getRank(),
-                             zeroIdx);
+  SmallVector<Value> indices(accBuf.getType().getRank(), zeroIdx);
   auto readOp =
       rewriter.create<vector::TransferReadOp>(loc, vecTy, accBuf, indices);
   rewriter.replaceAllUsesWith(forOp.getResults()[argIdx], readOp.getResult());
@@ -166,9 +182,9 @@ struct ContractToXsmm : public OpRewritePattern<vector::ContractionOp> {
     SmallVector<Attribute> flags;
     Value lhsBuf = getMemrefSource(rewriter, contractOp, lhs);
     Value rhsBuf = getMemrefSource(rewriter, contractOp, rhs);
-    std::optional<Value> hoistedAcc =
+    std::optional<TypedValue<MemRefType>> hoistedAcc =
         hoistAccumulationBuffer(rewriter, contractOp, acc);
-    Value accBuf =
+    TypedValue<MemRefType> accBuf =
         hoistedAcc ? *hoistedAcc : getMemrefSource(rewriter, contractOp, acc);
 
     SmallVector<Value> inputs{lhsBuf, rhsBuf, accBuf};
@@ -192,8 +208,7 @@ struct ContractToXsmm : public OpRewritePattern<vector::ContractionOp> {
     } else {
       // Load back the result to bring it back to vector semantics.
       Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      SmallVector<Value> indices(
-          dyn_cast<MemRefType>(accBuf.getType()).getRank(), zeroIdx);
+      SmallVector<Value> indices(accBuf.getType().getRank(), zeroIdx);
       auto readOp =
           rewriter.create<vector::TransferReadOp>(loc, vecTy, accBuf, indices);
       rewriter.replaceOp(contractOp, readOp);

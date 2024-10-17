@@ -9,12 +9,11 @@
 #include "cpu/include/Xsmm/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
-#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
@@ -46,6 +45,7 @@ namespace cpu {
 
 namespace {
 
+// Collapse whole reduction loop with a GEMM into equivalent BRGEMM operation.
 // Rewrites the following pattern:
 //   %0 = tt.make_tensor_ptr %base_ptr0 : tensor<MxK>
 //   %1 = tt.make_tensor_ptr %base_ptr1 : tensor<KxN>
@@ -82,6 +82,8 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
     if (!forOp || !accArg)
       return rewriter.notifyMatchFailure(dotOp, "not a reduction loop");
     auto iterArgs = llvm::to_vector(forOp.getInitArgs());
+    // TODO: Relax this check. It is needed to collapse whole loop but
+    //       alternatively only BRGEMM could be pulled out.
     if (iterArgs.size() != 3)
       return rewriter.notifyMatchFailure(dotOp, "invalid number of iter_args");
 
@@ -192,57 +194,65 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
         loc, newRhsPtr, loadMatB.getBoundaryCheck(), loadMatB.getPadding(),
         loadMatB.getCache(), loadMatB.getEvict(), loadMatB.getIsVolatile());
 
+    auto vecTyA =
+        VectorType::get(lhsResType.getShape(), lhsResType.getElementType());
+    auto castA = rewriter.create<UnrealizedConversionCastOp>(loc, vecTyA,
+                                                             ValueRange{matA});
+    auto vecTyB =
+        VectorType::get(rhsResType.getShape(), rhsResType.getElementType());
+    auto castB = rewriter.create<UnrealizedConversionCastOp>(loc, vecTyB,
+                                                             ValueRange{matB});
+    auto vecTyAcc = VectorType::get(acc.getType().getShape(),
+                                    acc.getType().getElementType());
+    unsigned accIdx = accArg.getArgNumber() - numIvs;
+    auto castAcc = rewriter.create<UnrealizedConversionCastOp>(
+        loc, vecTyAcc, ValueRange{iterArgs[accIdx]});
+
     // Split reduction dimension into tiles.
     // The number of tiles represents the batch dimension.
-    auto expandedTypeA =
-        RankedTensorType::get({resShape[0], numTiles, *lhsStepReduction},
-                              lhsResType.getElementType());
-    auto reassocA =
-        getReassociationIndicesForReshape(lhsResType, expandedTypeA);
-    auto expandedTypeB =
-        RankedTensorType::get({numTiles, *rhsStepReduction, resShape[1]},
-                              rhsResType.getElementType());
-    auto reassocB =
-        getReassociationIndicesForReshape(rhsResType, expandedTypeB);
-    if (!reassocA || !reassocB)
-      return rewriter.notifyMatchFailure(
-          dotOp, "could not reassociate GEMM dims to BRGEMM");
-
-    auto expandA = rewriter.create<tensor::ExpandShapeOp>(loc, expandedTypeA,
-                                                          matA, *reassocA);
-    auto expandB = rewriter.create<tensor::ExpandShapeOp>(loc, expandedTypeB,
-                                                          matB, *reassocB);
+    auto expandedTypeA = VectorType::get(
+        {resShape[0], numTiles, *lhsStepReduction}, vecTyA.getElementType());
+    auto expandedTypeB = VectorType::get(
+        {numTiles, *rhsStepReduction, resShape[1]}, vecTyB.getElementType());
+    auto expandA = rewriter.create<vector::ShapeCastOp>(loc, expandedTypeA,
+                                                        castA.getOutputs()[0]);
+    auto expandB = rewriter.create<vector::ShapeCastOp>(loc, expandedTypeB,
+                                                        castB.getOutputs()[0]);
 
     // Construct BRGEMM operation.
     // Generic is used as matrix A lacks transposition to match linalg named op.
     // TODO: Should the input operands be normalized with tranposes?
+    //
+    // Linalg operations would be more suitable to represent BRGEMM on tensors.
+    // However, upstream vectorization does not compose with triton's tensor
+    // semantics and further triton-cpu conversion to vector ops.
+    // Ideally, this should be handled by additional conversion patterns that
+    // map linalg ops to vector. For simplicity, the conversion is done
+    // immediately here which also ties this rewrite to triton-to-triton-cpu
+    // conversion.
+    // TODO: Revisit lowering strategy - consider having a separate conversions
+    //       for linalg ops and tensor casts, or at least use type converter
+    //       instead of manual casts.
     auto mapA = AffineMap::getMultiDimMapWithTargets(4, {1, 0, 3}, ctx);
     auto mapB = AffineMap::getMultiDimMapWithTargets(4, {0, 3, 2}, ctx);
     auto mapC = AffineMap::getMultiDimMapWithTargets(4, {1, 2}, ctx);
-    unsigned accIdx = accArg.getArgNumber() - numIvs;
-    auto brgemmOp = rewriter.create<linalg::GenericOp>(
-        loc, res.getType(), /*ins=*/ValueRange{expandA, expandB},
-        /*outs=*/ValueRange{iterArgs[accIdx]},
-        ArrayRef<AffineMap>{mapA, mapB, mapC},
-        ArrayRef<mlir::utils::IteratorType>{
-            mlir::utils::IteratorType::reduction,
-            mlir::utils::IteratorType::parallel,
-            mlir::utils::IteratorType::parallel,
-            mlir::utils::IteratorType::reduction},
-        /*doc=*/"", /*libraryCall=*/"",
-        [](OpBuilder &builder, Location loc, ValueRange args) {
-          Value res;
-          if (isa<FloatType>(args[2].getType())) {
-            Value mul = builder.create<arith::MulFOp>(loc, args[0], args[1]);
-            res = builder.create<arith::AddFOp>(loc, args[2], mul);
-          } else {
-            Value mul = builder.create<arith::MulIOp>(loc, args[0], args[1]);
-            res = builder.create<arith::AddIOp>(loc, args[2], mul);
-          }
-          builder.create<linalg::YieldOp>(loc, res);
-        });
+    SmallVector<vector::IteratorType> iteratorTypes{
+        vector::IteratorType::reduction, vector::IteratorType::parallel,
+        vector::IteratorType::parallel, vector::IteratorType::reduction};
+    auto brgemmOp = rewriter.create<vector::ContractionOp>(
+        loc, expandA.getResult(), expandB.getResult(), castAcc.getOutputs()[0],
+        rewriter.getAffineMapArrayAttr({mapA, mapB, mapC}),
+        rewriter.getArrayAttr(llvm::to_vector(llvm::map_range(
+            iteratorTypes, [&](vector::IteratorType itTy) -> mlir::Attribute {
+              return vector::IteratorTypeAttr::get(ctx, itTy);
+            }))));
+    auto brgemmCast = rewriter.create<UnrealizedConversionCastOp>(
+        loc, acc.getType(), ValueRange{brgemmOp.getResult()});
 
     // Increment the base pointers such that the whole loop can be removed.
+    // TODO: Revisit this part.
+    //       Only the BRGEMM could be pulled out of the loop and the rest
+    //       could be left as is.
     Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     Value reductionStepConst =
         rewriter.create<arith::ConstantIndexOp>(loc, *lhsStepReduction);
@@ -257,8 +267,8 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
         ValueRange{reductionOffset, zero});
 
     rewriter.replaceOp(forOp,
-                       ValueRange{brgemmOp.getResult(0), advanceA.getResult(),
-                                  advanceB.getResult()});
+                       ValueRange{brgemmCast.getOutputs()[0],
+                                  advanceA.getResult(), advanceB.getResult()});
 
     return success();
   }

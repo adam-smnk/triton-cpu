@@ -128,7 +128,6 @@ class CPUBackend(BaseBackend):
         pm.enable_debug()
         if opt.enable_xsmm:
             cpu.passes.ttcpuir.add_convert_gemm_to_brgemm(pm)
-            cpu.passes.ttcpuir.add_vectorize_linalg(pm)
             passes.common.add_canonicalizer(pm)
         cpu.passes.ttcpuir.add_scalarize(pm)
         cpu.passes.ttcpuir.add_convert_memory_ops(pm)
