@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <numeric>
 #include <optional>
 #include <utility>
 
@@ -169,16 +170,27 @@ struct DotReductionLoopToBrgemm : public OpRewritePattern<triton::DotOp> {
 
     // Create new block pointers spanning the whole reduction dimension.
     int64_t numTiles = (*loopUB - *loopLB) / (*loopStep);
+    SmallVector<int64_t> lhsResShape{resShape[0],
+                                     (*lhsStepReduction) * numTiles};
+    SmallVector<int64_t> rhsResShape{(*rhsStepReduction) * numTiles,
+                                     resShape[1]};
+    auto lhsNumElems = std::accumulate(lhsResShape.begin(), lhsResShape.end(),
+                                       1, std::multiplies{});
+    auto rhsNumElems = std::accumulate(rhsResShape.begin(), rhsResShape.end(),
+                                       1, std::multiplies{});
+    if (((lhsNumElems & (lhsNumElems - 1)) != 0) ||
+        ((rhsNumElems & (rhsNumElems - 1)) != 0))
+      return rewriter.notifyMatchFailure(
+          dotOp, "number of elements must be power-of-two");
+
     auto lhsResType =
-        RankedTensorType::get({resShape[0], (*lhsStepReduction) * numTiles},
-                              res.getType().getElementType());
+        RankedTensorType::get(lhsResShape, res.getType().getElementType());
+    auto rhsResType =
+        RankedTensorType::get(rhsResShape, res.getType().getElementType());
     auto newLhsPtr = rewriter.create<triton::MakeTensorPtrOp>(
         loc, PointerType::get(lhsResType, 1), lhsBlockPtr.getBase(),
         lhsBlockPtr.getShape(), lhsBlockPtr.getStrides(),
         lhsBlockPtr.getOffsets(), lhsBlockPtr.getOrderAttr());
-    auto rhsResType =
-        RankedTensorType::get({(*rhsStepReduction) * numTiles, resShape[1]},
-                              res.getType().getElementType());
     auto newRhsPtr = rewriter.create<triton::MakeTensorPtrOp>(
         loc, PointerType::get(rhsResType, 1), rhsBlockPtr.getBase(),
         rhsBlockPtr.getShape(), rhsBlockPtr.getStrides(),
