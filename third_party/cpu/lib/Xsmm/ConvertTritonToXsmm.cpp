@@ -12,8 +12,10 @@
 #include "VnniUtils.h"
 #include "XsmmUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
@@ -222,16 +224,71 @@ struct DotToXsmm : public OpRewritePattern<triton::DotOp> {
     SmallVector<Value> inputs{lhsBuf, rhsBuf, accBuf};
     SmallVector<Value> outputs{nullptr};
 
-    auto brgemmInfo = xsmm::utils::isMappableToBrgemm(rewriter, dotOp, inputs,
-                                                      outputs, indexingMaps);
+    // Rewrite matmul into a BRGEMM.
+    // This allows for additional reduction dimension tiling driven
+    // by a microkernel.
+    //
+    // TODO: Expand heuristics about brgemm rewrite profitability.
+    // TODO: Allow for batch dimension.
+    Operation *brgemmOp = nullptr;
+    int64_t kDim = lhs.getType().getShape().back();
+    auto accShape = acc.getType().getShape();
+    constexpr int64_t kTile = 32;
+    int64_t numTiles = kDim / kTile;
+    if (rank == 2 && (kDim % kTile) == 0 && numTiles > 1) {
+      // Split reduction dimension into tiles.
+      // The number of tiles represents the batch dimension.
+      inputs[0] = rewriter.create<memref::ExpandShapeOp>(
+          loc, SmallVector<int64_t>{accShape[0], numTiles, kTile}, inputs[0],
+          SmallVector<ReassociationIndices>{{0}, {1, 2}});
+      inputs[1] = rewriter.create<memref::ExpandShapeOp>(
+          loc, SmallVector<int64_t>{numTiles, kTile, accShape[1]}, inputs[1],
+          SmallVector<ReassociationIndices>{{0, 1}, {2}});
+
+      // Construct a temporary BRGEMM operation - used for XSMM call generation.
+      // Generic is used as matrix A lacks transposition to match named op.
+      //
+      // TODO: Generalize XSMM utils to not require a concrete operation.
+      auto mapA = AffineMap::getMultiDimMapWithTargets(4, {1, 0, 3}, ctx);
+      auto mapB = AffineMap::getMultiDimMapWithTargets(4, {0, 3, 2}, ctx);
+      auto mapC = AffineMap::getMultiDimMapWithTargets(4, {1, 2}, ctx);
+      indexingMaps = SmallVector<AffineMap>{mapA, mapB, mapC};
+      brgemmOp = rewriter.create<linalg::GenericOp>(
+          loc, /*ins=*/inputs, /*outs=*/ValueRange{}, indexingMaps,
+          ArrayRef<mlir::utils::IteratorType>{
+              mlir::utils::IteratorType::reduction,
+              mlir::utils::IteratorType::parallel,
+              mlir::utils::IteratorType::parallel,
+              mlir::utils::IteratorType::reduction},
+          /*doc=*/"", /*libraryCall=*/"",
+          [](OpBuilder &builder, Location loc, ValueRange args) {
+            Value res;
+            if (isa<FloatType>(args[2].getType())) {
+              Value mul = builder.create<arith::MulFOp>(loc, args[0], args[1]);
+              res = builder.create<arith::AddFOp>(loc, args[2], mul);
+            } else {
+              Value mul = builder.create<arith::MulIOp>(loc, args[0], args[1]);
+              res = builder.create<arith::AddIOp>(loc, args[2], mul);
+            }
+            builder.create<linalg::YieldOp>(loc, res);
+          });
+    }
+
+    // TODO: Perform this check much earlier before any rewrites.
+    Operation *contractionOp = brgemmOp ? brgemmOp : dotOp;
+    auto brgemmInfo = xsmm::utils::isMappableToBrgemm(
+        rewriter, contractionOp, inputs, outputs, indexingMaps);
     if (failed(brgemmInfo))
       return rewriter.notifyMatchFailure(dotOp, "not mappable to XSMM");
     if (brgemmInfo->isVnni)
       return rewriter.notifyMatchFailure(dotOp, "VNNI support NYI");
 
-    auto xsmmFuncs = xsmm::utils::buildBrgemmCalls(
-        rewriter, dotOp, ValueRange{lhsBuf, rhsBuf, accBuf}, *brgemmInfo,
-        flags);
+    auto xsmmFuncs = xsmm::utils::buildBrgemmCalls(rewriter, contractionOp,
+                                                   inputs, *brgemmInfo, flags);
+    if (brgemmOp) {
+      // Cleanup the temporary op.
+      rewriter.eraseOp(brgemmOp);
+    }
 
     if (hoistedAcc) {
       // Hoisting already updated all uses correctly.

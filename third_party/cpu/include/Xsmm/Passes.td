@@ -19,7 +19,9 @@ def ConvertTritonToXsmm : Pass<"triton-cpu-convert-triton-to-xsmm", "mlir::Modul
  let description = [{
    Convert triton operations to XSMM operations.
  }];
- let dependentDialects = ["func::FuncDialect",
+ let dependentDialects = ["linalg::LinalgDialect",
+                          "arith::ArithDialect",
+                          "func::FuncDialect",
                           "memref::MemRefDialect",
                           "triton::TritonDialect",
                           "triton::cpu::TritonCPUDialect",
