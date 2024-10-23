@@ -175,11 +175,10 @@ checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
       dims->k.back() == (numDims - 1) && dims->k.end()[-2] == (numDims - 2);
 
   unsigned k;
-  if (*xsmm::utils::getPosInCodomain(kVector[0],
-                                     contractOp->getOpOperand(1).get(),
-                                     contractOp, indexingMap[1]) <
-          *xsmm::utils::getPosInCodomain(n, contractOp->getOpOperand(1).get(),
-                                         contractOp, indexingMap[1]) ||
+  if (*xsmm::utils::getPosInCodomain(kVector[0], inputs[1], contractOp,
+                                     indexingMap[1]) <
+          *xsmm::utils::getPosInCodomain(n, inputs[1], contractOp,
+                                         indexingMap[1]) ||
       kVector.size() == 1) {
     k = kVector[0];
   } else if (kVector.size() > 1) {
@@ -206,16 +205,23 @@ checkAccess(PatternRewriter &rewriter, Operation *contractOp, unsigned m,
       stridesOnOperand = mlir::utils::getStaticStrides(operand);
     }
     if (failed(stridesOnOperand) ||
-        (isVnni && dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
-         operandIndex == 0 &&
-         (*stridesOnOperand)[*minorDimPosInCodomain] != 2) ||
-        (isVnni && (dataType != DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
-                    (*stridesOnOperand)[*minorDimPosInCodomain] != 1))) {
+        (isVnni &&
+         (dataType != xsmm::DataTypeAttr::get(contractOp->getContext(),
+                                              xsmm::DataType::BF16) &&
+          (*stridesOnOperand)[*minorDimPosInCodomain] != 1))) {
       return failure();
     }
-    if (isVnni && dataType == DataTypeAttr::get(ctx, xsmm::DataType::BF16) &&
+    if (isVnni &&
+        dataType == xsmm::DataTypeAttr::get(contractOp->getContext(),
+                                            xsmm::DataType::BF16) &&
         operandIndex == 1) {
-      return (*stridesOnOperand)[*majorDimPosInCodomain + 1];
+      if (*majorDimPosInCodomain == (*stridesOnOperand).size() - 2) {
+        return (*stridesOnOperand)[*majorDimPosInCodomain + 1];
+      } else if (*majorDimPosInCodomain == (*stridesOnOperand).size() - 1) {
+        return (*stridesOnOperand)[*majorDimPosInCodomain - 1];
+      } else {
+        return (*stridesOnOperand)[*majorDimPosInCodomain];
+      }
     } else {
       return (*stridesOnOperand)[*majorDimPosInCodomain];
     }
@@ -318,9 +324,26 @@ FailureOr<BrgemmInfo> isMappableToBrgemm(PatternRewriter &rewriter,
   unsigned n = contractionDims->n.back();
   SmallVector<unsigned, 2> kVector;
   std::optional<unsigned> batch;
+  auto pos = xsmm::utils::getPosInCodomain(contractionDims->k[0], inputs[0],
+                                           contractOp, indexingMap[0]);
+  int index = 0;
   if (contractionDims->k.size() >= 2) {
-    for (size_t i = 1; i < contractionDims->k.size(); i++)
+    for (int i = 1; i < contractionDims->k.size(); i++) {
+      auto posTwo = xsmm::utils::getPosInCodomain(
+          contractionDims->k[i], inputs[0], contractOp, indexingMap[0]);
+      if (*posTwo < *pos) {
+        index = i;
+        pos = posTwo;
+      }
+    }
+  }
+  if (contractionDims->k.size() >= 2) {
+    batch = contractionDims->k[index];
+    for (int i = 0; i < contractionDims->k.size(); i++) {
+      if (i == index)
+        continue;
       kVector.push_back(contractionDims->k[i]);
+    }
   } else {
     for (size_t i = 0; i < contractionDims->k.size(); i++)
       kVector.push_back(contractionDims->k[i]);
