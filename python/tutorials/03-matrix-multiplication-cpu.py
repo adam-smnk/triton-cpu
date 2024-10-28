@@ -315,9 +315,10 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor):
 
     if K_DIM_PADDING or DYNAMIC_K_BLOCK:
         padding_size = (math.ceil(K / k_block) * k_block) - K
-        a = torch.nn.functional.pad(a, (0, padding_size, 0, 0), mode='constant', value=0)
-        b = torch.nn.functional.pad(b, (0, 0, 0, padding_size), mode='constant', value=0)
-        K = a.shape[1]
+        if padding_size != 0:
+            a = torch.nn.functional.pad(a, (0, padding_size, 0, 0), mode='constant', value=0)
+            b = torch.nn.functional.pad(b, (0, 0, 0, padding_size), mode='constant', value=0)
+            K = a.shape[1]
 
     if CACHE_PADDING:
         a = torch.nn.functional.pad(a, (0, 32, 0, 0), mode='constant', value=0)
