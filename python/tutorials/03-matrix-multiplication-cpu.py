@@ -154,11 +154,13 @@ import torch
 import triton
 import triton.language as tl
 
-BLOCK_SIZE_M = 32
-BLOCK_SIZE_N = 32
-BLOCK_SIZE_K = 32
-GROUP_SIZE_M = 8
+BLOCK_SIZE_M = 64
+BLOCK_SIZE_N = 64
+BLOCK_SIZE_K = 64
+GROUP_SIZE_M = 4
 USE_GPU = False
+USE_BLOCK_POINTERS = False
+DATA_TYPE = torch.bfloat16
 
 
 @triton.jit
@@ -176,6 +178,7 @@ def matmul_kernel(
         # Meta-parameters
         BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
         GROUP_SIZE_M: tl.constexpr,  #
+        USE_BLOCK_POINTERS: tl.constexpr,  #
 ):
     """Kernel for computing the matmul C = A x B.
     A has shape (M, K), B has shape (K, N) and C has shape (M, N)
@@ -193,6 +196,9 @@ def matmul_kernel(
     group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
     pid_m = first_pid_m + (pid % group_size_m)
     pid_n = (pid % num_pid_in_group) // group_size_m
+    if USE_BLOCK_POINTERS:
+        block_offset_m = pid_m * BLOCK_SIZE_M
+        block_offset_n = pid_n * BLOCK_SIZE_N
 
     # ----------------------------------------------------------
     # Create pointers for the first blocks of A and B.
@@ -201,11 +207,29 @@ def matmul_kernel(
     # `a_ptrs` is a block of [BLOCK_SIZE_M, BLOCK_SIZE_K] pointers
     # `b_ptrs` is a block of [BLOCK_SIZE_K, BLOCK_SIZE_N] pointers
     # See above `Pointer Arithmetic` section for details
-    offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
-    offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
-    offs_k = tl.arange(0, BLOCK_SIZE_K)
-    a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
-    b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
+    if USE_BLOCK_POINTERS:
+        a_tile_ptr = tl.make_block_ptr(
+            base=a_ptr,
+            shape=(M, K),
+            strides=(stride_am, stride_ak),
+            offsets=(block_offset_m, 0),
+            block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K),
+            order=(1, 0)
+        )
+        b_tile_ptr = tl.make_block_ptr(
+            base=b_ptr,
+            shape=(K, N),
+            strides=(stride_bk, stride_bn),
+            offsets=(0, block_offset_n),
+            block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N),
+            order=(1, 0)
+        )
+    else:
+        offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
+        offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
+        offs_k = tl.arange(0, BLOCK_SIZE_K)
+        a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
+        b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
 
     # -----------------------------------------------------------
     # Iterate to compute a block of the C matrix.
@@ -220,27 +244,48 @@ def matmul_kernel(
         # TODO: Currently masked load is not supported yet.
         # a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
         # b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
-        a = tl.load(a_ptrs)
-        b = tl.load(b_ptrs)
+        if USE_BLOCK_POINTERS:
+            # TODO: Currently masked load is not supported yet.
+            a = tl.load(a_tile_ptr, boundary_check=(0, 1))
+            b = tl.load(b_tile_ptr, boundary_check=(0, 1))
+        else:
+            a = tl.load(a_ptrs)
+            b = tl.load(b_ptrs)
         # We accumulate along the K dimension.
         accumulator = tl.dot(a, b, accumulator, out_dtype=tl.float32)
         # Advance the ptrs to the next K block.
-        a_ptrs += BLOCK_SIZE_K * stride_ak
-        b_ptrs += BLOCK_SIZE_K * stride_bk
+        if USE_BLOCK_POINTERS:
+            a_tile_ptr = tl.advance(a_tile_ptr, [0, BLOCK_SIZE_K])
+            b_tile_ptr = tl.advance(b_tile_ptr, [BLOCK_SIZE_K, 0])
+        else:
+            a_ptrs += BLOCK_SIZE_K * stride_ak
+            b_ptrs += BLOCK_SIZE_K * stride_bk
 
     # Convert the accumulator to the output matrix C's type if needed.
-    c = accumulator
+    c = accumulator.to(c_ptr.type.element_ty)
 
-    # -----------------------------------------------------------
-    # Write back the block of the output matrix C with masks.
-    offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
+    if USE_BLOCK_POINTERS:
+        # TODO: masking
+        c_block_ptr = tl.make_block_ptr(
+            base=c_ptr,
+            shape=(M, N),
+            strides=(stride_cm, stride_cn),
+            offsets=(block_offset_m, block_offset_n),
+            block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N),
+            order=(1, 0)
+        )
+        tl.store(c_block_ptr, c, boundary_check=(0, 1))
+    else:
+        # -----------------------------------------------------------
+        # Write back the block of the output matrix C with masks.
+        offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
 
-    # TODO: Currently masked load is not supported yet.
-    # c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
-    # tl.store(c_ptrs, c, mask=c_mask)
-    tl.store(c_ptrs, c)
+        # TODO: Currently masked load is not supported yet.
+        # c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+        # tl.store(c_ptrs, c, mask=c_mask)
+        tl.store(c_ptrs, c)
 
 
 # %%
@@ -248,7 +293,7 @@ def matmul_kernel(
 # and (1) checks any shape constraint; (2) allocates the output; (3) launches the above kernel.
 
 
-def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=0):
+def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=56):
     # Check constraints.
     assert a.shape[1] == b.shape[0], "Incompatible dimensions"
     assert a.is_contiguous(), "Matrix A must be contiguous"
@@ -272,6 +317,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, num_threads=0):
         c.stride(0), c.stride(1),  #
         BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K,  #
         GROUP_SIZE_M=GROUP_SIZE_M,  #
+        USE_BLOCK_POINTERS=USE_BLOCK_POINTERS,  #
         num_threads=num_threads,  #
     )
     return c
@@ -287,8 +333,8 @@ torch.manual_seed(0)
 
 triton.runtime.driver.set_active_to_cpu()
 
-a = torch.randn((512, 512), device='cpu', dtype=torch.float32)
-b = torch.randn((512, 512), device='cpu', dtype=torch.float32)
+a = torch.randn((512, 512), device='cpu', dtype=DATA_TYPE)
+b = torch.randn((512, 512), device='cpu', dtype=DATA_TYPE)
 triton_output = matmul(a, b, None)
 torch_output = torch.matmul(a, b)
 print(f"triton_cpu_output_with_{a.dtype}_inputs={triton_output}")
@@ -296,6 +342,9 @@ print(f"torch_cpu_output_with_{a.dtype}_inputs={torch_output}")
 rtol = 0
 if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=rtol):
     print("✅ TritonCPU and TorchCPU match")
+elif DATA_TYPE == torch.bfloat16 and torch.allclose(triton_output, torch_output, atol=2e-0, rtol=rtol):
+    print("⚠️ TritonCPU and TorchCPU rounding errors, the maximum difference is "
+          f'{torch.max(torch.abs(triton_output - torch_output))}')
 else:
     print("❌ TritonCPU and TorchCPU differ, the maximum difference is "
           f'{torch.max(torch.abs(triton_output - torch_output))}')
@@ -310,9 +359,9 @@ else:
 # We can now compare the performance of our kernel against that of Pytorch. Here we focus on square matrices,
 # but feel free to arrange this script as you wish to benchmark any other matrix shape.
 
-LINE_VALS = ['triton-cpu-single', 'triton-cpu', 'torch-cpu-native', 'torch-cpu-compile']
-LINE_NAMES = ['TritonCPU 1', 'TritonCPU', 'TorchCPU (native)', 'TorchCPU (compile)']
-LINE_STYLES = [('blue', '--'), ('blue', '-'), ('green', '--'), ('green', '-')]
+LINE_VALS = ['triton-cpu-single', 'triton-cpu']#, 'torch-cpu-native', 'torch-cpu-compile']
+LINE_NAMES = ['TritonCPU 1', 'TritonCPU']#, 'TorchCPU (native)', 'TorchCPU (compile)']
+LINE_STYLES = [('blue', '--'), ('blue', '-')]#, ('green', '--'), ('green', '-')]
 
 if USE_GPU and triton.runtime.driver.get_active_gpus():
     triton.runtime.driver.set_active_to_gpu()
@@ -362,8 +411,8 @@ if USE_GPU and triton.runtime.driver.get_active_gpus():
 def benchmark(M, N, K, provider):
 
     device = 'cpu' if 'cpu' in provider else 'cuda'
-    a = torch.randn((M, K), device=device, dtype=torch.float32)
-    b = torch.randn((K, N), device=device, dtype=torch.float32)
+    a = torch.randn((M, K), device=device, dtype=DATA_TYPE)
+    b = torch.randn((K, N), device=device, dtype=DATA_TYPE)
 
     if device == 'cpu':
         c = torch.empty((M, N), device=a.device, dtype=a.dtype)
