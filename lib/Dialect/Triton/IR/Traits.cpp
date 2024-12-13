@@ -1,15 +1,13 @@
-#include "triton/Dialect/Triton/IR/Traits.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <numeric>
 
 #include "mlir/IR/TypeUtilities.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace mlir;
-namespace ttg = mlir::triton::gpu;
 
 static LogicalResult verifySameEncoding(Type typeA, Type typeB,
                                         bool allowTensorPointerType) {
@@ -118,53 +116,12 @@ LogicalResult OpTrait::impl::verifyTensorLayouts(Operation *op) {
     if (!layout)
       return success();
 
-    if (isa<ttg::SharedEncodingAttr>(layout))
-      return makeErr() << "Shared layout is not allowed on tensor type.";
-    // TODO(jlebar): Currently this only checks blocked layouts, but other
-    // layouts also have invariants!
-
-    // TODO(jlebar): Handle the case when the encoding is nested within tt.ptr.
-    if (auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(layout)) {
-      // A different verifier should have checked that the layout itself is
-      // valid, including that threads-per-warp has the same rank as
-      // warps-per-block etc.
-      auto layoutRank = blocked.getThreadsPerWarp().size();
-      if (layoutRank != rankedTy.getRank()) {
-        return makeErr() << layout << ".\nLayout has rank " << layoutRank
-                         << ", but the tensor it's attached to has rank "
-                         << rankedTy.getRank() << ".";
-      }
-
-      int moduleThreadsPerWarp =
-          ttg::TritonGPUDialect::getThreadsPerWarp(module);
-      int64_t layoutThreadsPerWarp = product(blocked.getThreadsPerWarp());
-      if (layoutThreadsPerWarp != moduleThreadsPerWarp) {
-        return makeErr() << layout << ".\nLayout has a total of "
-                         << layoutThreadsPerWarp
-                         << " threads per warp, but the module specifies "
-                         << moduleThreadsPerWarp << " threads per warp.";
-      }
-
-      int moduleWarpsPerCTA = ttg::TritonGPUDialect::getNumWarps(module);
-      int64_t layoutWarpsPerCTA = product(blocked.getWarpsPerCTA());
-      if (layoutWarpsPerCTA != moduleWarpsPerCTA) {
-        return makeErr() << layout << ".\nLayout has a total of "
-                         << layoutWarpsPerCTA
-                         << " warps per CTA, but the module specifies "
-                         << moduleWarpsPerCTA << " warps per CTA.";
-      }
-
-      if (blocked.getCTALayout().getCTAsPerCGA().size() > 0) {
-        int moduleCTAsPerCGA = ttg::TritonGPUDialect::getNumCTAs(module);
-        int64_t layoutCTAsPerCGA =
-            product(blocked.getCTALayout().getCTAsPerCGA());
-        if (layoutCTAsPerCGA != moduleCTAsPerCGA) {
-          return makeErr() << layout << ".\nLayout has a total of "
-                           << layoutCTAsPerCGA
-                           << " CTAs per CGA, but the module specifies "
-                           << moduleCTAsPerCGA << " CTAs per CGA.";
-        }
-      }
+    Dialect &dialect = layout.getDialect();
+    auto verifyLayoutInterface =
+        dyn_cast<mlir::triton::DialectVerifyTensorLayoutInterface>(&dialect);
+    if (verifyLayoutInterface) {
+      return verifyLayoutInterface->verifyTensorLayout(layout, rankedTy, module,
+                                                       makeErr);
     }
 
     return success();
@@ -236,4 +193,48 @@ OpTrait::impl::verifySameLoadStoreOperandsAndResultShape(Operation *op) {
              << "requires the same shape for all operands and results";
 
   return verifySameLoadStoreOperandsShape(op);
+}
+
+LogicalResult OpTrait::impl::verifyDotLikeOp(Operation *op) {
+  if (op->getNumOperands() < 3)
+    return op->emitOpError("expected at least 3 operands");
+  auto aTy = cast<ShapedType>(op->getOperand(0).getType());
+  auto bTy = cast<ShapedType>(op->getOperand(1).getType());
+  auto cTy = cast<ShapedType>(op->getOperand(2).getType());
+  auto aShape = aTy.getShape();
+  SmallVector<int64_t> bShape{bTy.getShape()};
+  auto cShape = cTy.getShape();
+  if (auto attr = dyn_cast_or_null<triton::InputEncodingAttr>(
+          op->getAttr("rhsEncoding"))) {
+    if (attr.getValue() == triton::InputEncoding::RowMajorInterleaved) {
+      int64_t scale = 32 / bTy.getElementTypeBitWidth();
+      bShape[0] *= scale;
+      bShape[1] /= scale;
+    }
+  }
+  // Check if all 3d or all 2d
+  if (aShape.size() != 2 && aShape.size() != 3)
+    return op->emitOpError("expected operands to be 2d or 3d");
+  if (aShape.size() != bShape.size() || aShape.size() != cShape.size())
+    return op->emitOpError("expected all operands to have the same rank");
+  // Check if the first two operands share a common dimension
+  // TODO: enable back with an interface to support scaled dot.
+  // if (aShape[aShape.size() - 1] != bShape[aShape.size() - 2])
+  //   return op->emitOpError("expected the last dimension of the first
+  //   operand "
+  //                          "to be equal to the second-to-last dimension of
+  //                          " "the second operand");
+  // Check the batch dimension
+  if (aShape.size() == 3 && (aShape[0] != cShape[0] || bShape[0] != cShape[0]))
+    return op->emitOpError("expected the first dimension of the first "
+                           "operand to be equal to the first dimension of "
+                           "the result");
+  // Check the output shape
+  if (cShape[cShape.size() - 2] != aShape[aShape.size() - 2] ||
+      cShape[cShape.size() - 1] != bShape[aShape.size() - 1])
+    return op->emitOpError(
+        "expected the output shape to be the concatenation of the last "
+        "dimension of the first operand and the last dimension of the "
+        "second ");
+  return success();
 }

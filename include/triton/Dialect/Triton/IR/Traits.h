@@ -36,6 +36,8 @@ LogicalResult verifySameLoadStoreOperandsShape(Operation *op);
 
 LogicalResult verifySameLoadStoreOperandsAndResultShape(Operation *op);
 
+LogicalResult verifyDotLikeOp(Operation *op);
+
 } // namespace impl
 
 template <class ConcreteType>
@@ -67,40 +69,7 @@ template <class ConcreteType>
 class DotLike : public TraitBase<ConcreteType, DotLike> {
 public:
   static LogicalResult verifyTrait(Operation *op) {
-    if (op->getNumOperands() < 3)
-      return op->emitOpError("expected at least 3 operands");
-    auto aTy = cast<TensorOrMemDesc>(op->getOperand(0).getType());
-    auto bTy = cast<TensorOrMemDesc>(op->getOperand(1).getType());
-    auto cTy = cast<TensorOrMemDesc>(op->getOperand(2).getType());
-    auto aShape = aTy.getShape();
-    auto bShape = bTy.getShape();
-    auto cShape = cTy.getShape();
-    // Check if all 3d or all 2d
-    if (aShape.size() != 2 && aShape.size() != 3)
-      return op->emitOpError("expected operands to be 2d or 3d");
-    if (aShape.size() != bShape.size() || aShape.size() != cShape.size())
-      return op->emitOpError("expected all operands to have the same rank");
-    // Check if the first two operands share a common dimension
-    // TODO: enable back with an interface to support scaled dot.
-    // if (aShape[aShape.size() - 1] != bShape[aShape.size() - 2])
-    //   return op->emitOpError("expected the last dimension of the first
-    //   operand "
-    //                          "to be equal to the second-to-last dimension of
-    //                          " "the second operand");
-    // Check the batch dimension
-    if (aShape.size() == 3 &&
-        (aShape[0] != cShape[0] || bShape[0] != cShape[0]))
-      return op->emitOpError("expected the first dimension of the first "
-                             "operand to be equal to the first dimension of "
-                             "the result");
-    // Check the output shape
-    if (cShape[cShape.size() - 2] != aShape[aShape.size() - 2] ||
-        cShape[cShape.size() - 1] != bShape[aShape.size() - 1])
-      return op->emitOpError(
-          "expected the output shape to be the concatenation of the last "
-          "dimension of the first operand and the last dimension of the "
-          "second ");
-    return success();
+    return impl::verifyDotLikeOp(op);
   }
 };
 

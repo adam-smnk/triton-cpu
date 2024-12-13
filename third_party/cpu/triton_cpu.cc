@@ -83,6 +83,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_convert_debug_ops", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertDebugOps());
   });
+  m.def("add_triton_cpu_canonicalizer", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createCanonicalize());
+  });
   m.def("add_optimize_masks", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createOptimizeMasks());
   });
@@ -94,6 +97,12 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
                                      bool convertFp16, bool convertBf16) {
     pm.addPass(mlir::triton::cpu::createConvertDotToAMX(
         convertInt8, convertFp16, convertBf16));
+  });
+  m.def("add_convert_dot_to_fma", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createConvertDotToFMA());
+  });
+  m.def("add_convert_dot_generic", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createConvertDotGeneric());
   });
   m.def("add_convert_unsupported_ops",
         [](mlir::PassManager &pm, bool promote_bf16_to_fp32,
@@ -152,8 +161,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_memref_to_llvmir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
   });
-  m.def("add_math_to_vec_lib", [](mlir::PassManager &pm, cpu::VecLib lib) {
-    pm.addPass(mlir::triton::cpu::createMathToVecLibPass(lib));
+  m.def("add_math_to_vec_lib", [](mlir::PassManager &pm, cpu::VecLib lib,
+                                  std::set<std::string> cpu_features) {
+    pm.addPass(mlir::triton::cpu::createMathToVecLibPass(lib, cpu_features));
   });
   m.def("add_math_to_libm", [](mlir::PassManager &pm) {
     pm.addPass(mlir::createConvertMathToLibmPass());

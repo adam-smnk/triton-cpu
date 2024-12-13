@@ -7,6 +7,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonCPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Tools/LinearLayout.h"
 
 namespace mlir {
 
@@ -153,6 +154,19 @@ private:
   SmallVector<Type> srcElementTypes;
 };
 
+// Helper class for lowering `tt.gather` operations. This class shares lowering
+// logic between shared memory allocation and LLVM codegen.
+class GatherLoweringHelper {
+public:
+  GatherLoweringHelper(triton::GatherOp gatherOp);
+
+  // Get the shared memory scratch size required by this op.
+  unsigned getScratchSizeInBytes();
+
+private:
+  triton::GatherOp gatherOp;
+};
+
 // Decomposes a reshape into simpler pieces.
 //
 // As an example, suppose we have a reshape from [4,4,4] to [2,2,8,2].
@@ -190,6 +204,14 @@ bool supportMMA(triton::DotOp op, int version);
 
 bool supportMMA(Value value, int version);
 
+// Conversion from `srcTy` to `dstTy` involving the minimum amount of data
+// transfer provided that both types can be converted to LL (if it can't it'll
+// return nullopt). The output will be such that layout.getInDimNames() ==
+// layout.getOutDimNames() and the conversion will not include kBlock (resp.
+// kWarp or kLane) if it can be avoided
+std::optional<mlir::triton::LinearLayout>
+minimalCvtLayout(RankedTensorType srcTy, RankedTensorType dstTy);
+
 // Conversion from `srcTy` to `dstTy` only involves reordering of registers.
 // There is no need for data exchange across threads, warps, or blocks.
 bool cvtReordersRegisters(RankedTensorType srcTy, RankedTensorType dstTy);
@@ -204,11 +226,7 @@ bool cvtNeedsSharedMemory(RankedTensorType srcTy, RankedTensorType dstTy);
 
 bool atomicNeedsSharedMemory(Value result);
 
-bool isBlockedToDotShortcut(RankedTensorType &srcTy, RankedTensorType &dstT);
-
-bool isMfmaToDotShortcut(RankedTensorType srcTy, RankedTensorType dstTy);
-
-bool isMmaToDotShortcut(RankedTensorType srcTy, RankedTensorType dstTy);
+bool isBlockedToDotShortcut(RankedTensorType srcTy, RankedTensorType dstTy);
 
 // Return true if the src and dst layout match.
 bool matchMmaV3AndDotOperandLayout(RankedTensorType srcTy,

@@ -41,6 +41,8 @@ class CPUOptions:
     supported_fp8_dtypes: Tuple[str] = ("fp8e5", "fp8e5b16", "fp8e4nv")
     deprecated_fp8_dtypes: Tuple[str] = ()
     allowed_dot_input_precisions: Tuple[str] = ("ieee", "tf32", "tf32x3")
+    allowed_dot_input_encodings: Tuple[Tuple[str]] = (("row_major", "row_major"), ("row_major",
+                                                                                   "row_major_interleaved"))
     allow_fp8e4nv: bool = True
     allow_fp8e4b15: bool = True
     enable_fp_fusion: bool = True
@@ -180,9 +182,11 @@ class CPUBackend(BaseBackend):
         # TTCIR -> Target TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
-        convert_bf16_dot_product = self.cpu_arch == "aarch64" and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features
+        convert_bf16_dot_product = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
+                                    and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features)
         if convert_bf16_dot_product:
             use_horizontal_sum = os.getenv("TRITON_CPU_DOT_PROD_HORIZ_SUM", "1") == "1"
             cpu.passes.ttcpuir.add_convert_dot_product(pm, use_horizontal_sum)
@@ -193,6 +197,9 @@ class CPUBackend(BaseBackend):
             amx_fp16 = False
             amx_bf16 = 'amx-bf16' in self.cpu_features
             cpu.passes.ttcpuir.add_convert_dot_to_amx(pm, amx_int8, amx_fp16, amx_bf16)
+        if 'avx512f' in self.cpu_features:
+            cpu.passes.ttcpuir.add_convert_dot_to_fma(pm)
+        cpu.passes.ttcpuir.add_convert_dot_generic(pm)
         promote_bf16_to_fp32 = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features
         # We don't have any lowering for mixed precision matmuls, so always use casts for now
         convert_mixed_precision_matmul = True
@@ -238,7 +245,7 @@ class CPUBackend(BaseBackend):
             VecLib.libmvec: {"avx512f"},
         }
         if (vec_lib := options.get_vec_lib()) and vec_lib_requirements[vec_lib] & self.cpu_features:
-            cpu.passes.ttcpuir.add_math_to_vec_lib(pm, vec_lib)
+            cpu.passes.ttcpuir.add_math_to_vec_lib(pm, vec_lib, self.cpu_features)
 
         passes.convert.add_math_to_llvmir(pm)
         cpu.passes.ttcpuir.add_math_to_libm(pm)
@@ -286,7 +293,7 @@ class CPUBackend(BaseBackend):
             asm_path = os.path.join(tmpdir, "kernel.s")
             Path(asm_path).write_text(src)
             lib_dirs = cpu_driver.library_dirs
-            libs = ["gcc", "m", "TritonCPURuntime", "sleef"]
+            libs = ["m", "TritonCPURuntime", "sleef"]
             if options.enable_vector_xsmm or options.enable_triton_xsmm or options.enable_loop_brgemm_xsmm:
                 libs.extend(["xsmm", "TritonCPUXsmmRuntime"])
             so = _build("kernel", asm_path, tmpdir, lib_dirs, cpu_driver.include_dirs, libs)

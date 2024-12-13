@@ -125,4 +125,41 @@ def ConvertDotToAMX : Pass<"triton-cpu-convert-dot-to-amx", "mlir::ModuleOp"> {
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
+def ConvertDotToFMA : Pass<"triton-cpu-convert-dot-to-fma", "mlir::ModuleOp"> {
+    let summary = "Decompose dot product op to a series of FMA operations.";
+    let description = [{ }];
+
+    let constructor = "mlir::triton::cpu::createConvertDotToFMA()";
+
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::vector::VectorDialect",
+                             "mlir::triton::TritonDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
+def ConvertDotGeneric : Pass<"triton-cpu-convert-dot-generic", "mlir::ModuleOp"> {
+    let summary = "Generic convertion of dot product op.";
+    let description = [{
+        This pass is used to lower matmul operations to generic vector code.
+    }];
+
+    let constructor = "mlir::triton::cpu::createConvertDotGeneric()";
+
+    let dependentDialects = ["mlir::vector::VectorDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
+def Canonicalize : Pass<"triton-cpu-canonicalize", "mlir::ModuleOp"> {
+    let summary = "Canonicalization pass.";
+    let description = [{
+        This pass applies various foldings to simplify analysis and transformations
+        in optimization passes.
+    }];
+
+    let constructor = "mlir::triton::cpu::createCanonicalize()";
+
+    let dependentDialects = ["mlir::vector::VectorDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
 #endif

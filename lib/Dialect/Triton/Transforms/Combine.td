@@ -12,25 +12,25 @@ include "mlir/IR/PatternBase.td"
 // AddIOp(d, DotOp(a, b, c)) and c==0 => DotOp(a, b, d)
 // AddFOp(d, DotOp(a, b, c)) and c==0 => DotOp(a, b, d)
 def CombineDotAddIPattern : Pat<
-        (Arith_AddIOp $d, (TT_DotOp:$res $a, $b, $c, $inputPrecision, $maxNumImpreciseAcc), $overflow),
-        (TT_DotOp $a, $b, $d, $inputPrecision, $maxNumImpreciseAcc, (location $res)),
+        (Arith_AddIOp $d, (TT_DotOp:$res $a, $b, $c, $inputPrecision, $maxNumImpreciseAcc, $lhsEncoding, $rhsEncoding), $overflow),
+        (TT_DotOp $a, $b, $d, $inputPrecision, $maxNumImpreciseAcc, $lhsEncoding, $rhsEncoding, (location $res)),
         [(Constraint<CPred<"isZero($0)">> $c),
          (Constraint<CPred<"res->hasOneUse()">, "dot result has a single use">)]>;
 def CombineDotAddFPattern : Pat<
-        (Arith_AddFOp $d, (TT_DotOp:$res $a, $b, $c, $inputPrecision, $maxNumImpreciseAcc), $fastmath),
-        (TT_DotOp $a, $b, $d, $inputPrecision, $maxNumImpreciseAcc, (location $res)),
+        (Arith_AddFOp $d, (TT_DotOp:$res $a, $b, $c, $inputPrecision, $maxNumImpreciseAcc, $lhsEncoding, $rhsEncoding), $fastmath),
+        (TT_DotOp $a, $b, $d, $inputPrecision, $maxNumImpreciseAcc, $lhsEncoding, $rhsEncoding, (location $res)),
         [(Constraint<CPred<"isZero($0)">> $c),
          (Constraint<CPred<"::llvm::cast<::mlir::IntegerAttr>($0).getInt() == 0">> $maxNumImpreciseAcc),
          (Constraint<CPred<"res->hasOneUse()">, "dot result has a single use">)]>;
 
 def CombineDotAddIRevPattern : Pat<
-        (Arith_AddIOp (TT_DotOp:$res $a, $b, $c, $inputPrecision, $maxNumImpreciseAcc), $d, $overflow),
-        (TT_DotOp $a, $b, $d, $inputPrecision, $maxNumImpreciseAcc, (location $res)),
+        (Arith_AddIOp (TT_DotOp:$res $a, $b, $c, $inputPrecision, $maxNumImpreciseAcc, $lhsEncoding, $rhsEncoding), $d, $overflow),
+        (TT_DotOp $a, $b, $d, $inputPrecision, $maxNumImpreciseAcc, $lhsEncoding, $rhsEncoding, (location $res)),
         [(Constraint<CPred<"isZero($0)">> $c),
          (Constraint<CPred<"res->hasOneUse()">, "dot result has a single use">)]>;
 def CombineDotAddFRevPattern : Pat<
-        (Arith_AddFOp (TT_DotOp:$res $a, $b, $c, $inputPrecision, $maxNumImpreciseAcc), $d, $fastmath),
-        (TT_DotOp $a, $b, $d, $inputPrecision, $maxNumImpreciseAcc, (location $res)),
+        (Arith_AddFOp (TT_DotOp:$res $a, $b, $c, $inputPrecision, $maxNumImpreciseAcc, $lhsEncoding, $rhsEncoding), $d, $fastmath),
+        (TT_DotOp $a, $b, $d, $inputPrecision, $maxNumImpreciseAcc, $lhsEncoding, $rhsEncoding, (location $res)),
         [(Constraint<CPred<"isZero($0)">> $c),
          (Constraint<CPred<"::llvm::cast<::mlir::IntegerAttr>($0).getInt() == 0">> $maxNumImpreciseAcc),
          (Constraint<CPred<"res->hasOneUse()">, "dot result has a single use">)]>;
@@ -43,12 +43,5 @@ def CombineAddPtrPattern : Pat<
         (TT_AddPtrOp (TT_AddPtrOp $ptr, $idx0), $idx1),
         (TT_AddPtrOp $ptr, (Arith_AddIOp $idx0, $idx1, DefOverflow)),
         [(Constraint<CPred<"isAddPtrOffsetCombinable($0, $1)">> $idx0, $idx1)]>;
-
-// broadcast(cst) => cst
-def getConstantValue : NativeCodeCall<"getConstantValue($_builder, $0, $1)">;
-def CombineBroadcastConstantPattern : Pat<
-    (TT_BroadcastOp:$bcast_res (Arith_ConstantOp $value)),
-    (Arith_ConstantOp (getConstantValue $value, $bcast_res), (location $bcast_res)),
-    [(Constraint<CPred<"isBroadcastConstantCombinable($0)">> $value)]>;
 
 #endif

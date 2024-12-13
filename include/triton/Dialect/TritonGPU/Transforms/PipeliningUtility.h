@@ -8,6 +8,11 @@ namespace mlir {
 namespace triton {
 
 static const char *kNumStagesAttrName = "tt.num_stages";
+static const char *kLoopStageAttrName = "loop.stage";
+static const char *kLoopClusterAttrName = "loop.cluster";
+
+bool loopHasDistGreaterThanOne(scf::ForOp forOp);
+bool isOuterLoop(scf::ForOp forOp);
 
 /// Function to mask operations during scheduling.
 Operation *predicateOp(RewriterBase &rewriter, Operation *op, Value pred);
@@ -29,6 +34,11 @@ void addOps(scf::ForOp forOp, int stage,
 /// mutable.
 void replaceUsesAndPropagateType(OpBuilder &builder, Operation *oldUse,
                                  Value val);
+
+// Return the minClusterId and maxClusterId for the given ForOp.
+std::pair<int, int> getMinMaxCluster(scf::ForOp &forOp);
+std::pair<int, int> getStageCluster(Operation *op);
+void setStageCluster(Operation *op, int stage, int cluster);
 } // namespace triton
 } // namespace mlir
 
