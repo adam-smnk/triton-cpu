@@ -5,8 +5,8 @@ import subprocess
 import sysconfig
 
 from abc import ABCMeta, abstractmethod
-from dataclasses import dataclass
-from typing import Dict, List, Tuple, Union
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple, Union, Set
 from types import ModuleType
 
 # Table that associates strings to AttrsDescriptor (sub)classes.
