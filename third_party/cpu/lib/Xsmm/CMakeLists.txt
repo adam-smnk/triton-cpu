@@ -1,3 +1,5 @@
+add_subdirectory(kernels)
+
 get_property(extension_libs GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
 
 add_triton_library(TritonCPUXsmm
