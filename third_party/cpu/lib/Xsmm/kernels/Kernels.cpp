@@ -8,6 +8,6 @@
 
 #include "Kernels.h"
 
-bool isConfigSupported(unsigned m, unsigned n, unsigned k, unsigned batch){
+bool isConfigSupported(unsigned m, unsigned n, unsigned k){
   return true;
 }

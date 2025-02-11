@@ -9,16 +9,8 @@
 #ifndef XSMM_KERNELS_KERNELS_H
 #define XSMM_KERNELS_KERNELS_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include "XsmmKernels.h"
 
-#ifdef __cplusplus
-} /* extern "c" */
-#endif
-
-bool isConfigSupported(unsigned m, unsigned n, unsigned k, unsigned batch = 0);
+bool isConfigSupported(unsigned m, unsigned n, unsigned k);
 
 #endif // XSMM_KERNELS_KERNELS_H
