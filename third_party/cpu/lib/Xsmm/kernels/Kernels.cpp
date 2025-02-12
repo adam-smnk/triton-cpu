@@ -8,6 +8,20 @@
 
 #include "Kernels.h"
 
-bool isConfigSupported(unsigned m, unsigned n, unsigned k){
-  return true;
+bool isConfigSupported(ComputeType comp, DataType data, unsigned m, unsigned n,
+                       unsigned k) {
+  // Currently all size combinations support all data types - no `data` checks.
+  if (comp == ComputeType::GEMM) {
+    if (m == 32 && n == 32 && k == 32)
+      return true;
+    if (m == 64 && n == 64)
+      return k == 32 || k == 64 || k == 512;
+  }
+
+  if (comp == ComputeType::BRGEMM) {
+    if (m == 64 && n == 64 && k == 32)
+      return true;
+  }
+
+  return false;
 }

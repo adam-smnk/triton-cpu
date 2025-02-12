@@ -11,6 +11,11 @@
 
 #include "XsmmKernels.h"
 
-bool isConfigSupported(unsigned m, unsigned n, unsigned k);
+enum class ComputeType { GEMM, BRGEMM };
+
+enum class DataType { F32, BF16 };
+
+bool isConfigSupported(ComputeType comp, DataType data, unsigned m, unsigned n,
+                       unsigned k);
 
 #endif // XSMM_KERNELS_KERNELS_H
