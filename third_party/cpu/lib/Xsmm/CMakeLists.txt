@@ -14,6 +14,7 @@ add_triton_library(TritonCPUXsmm
     TritonCPUXsmmPassIncGen
     TritonCPUXsmmAttrDefIncGen
     xsmm
+    TritonCPUXsmmKernelUtils
 
     LINK_LIBS PUBLIC
     ${extension_libs}
@@ -27,6 +28,7 @@ add_triton_library(TritonCPUXsmm
     MLIRLinalgUtils
     TritonCPUIR
     xsmm
+    TritonCPUXsmmKernelUtils
 )
 
 target_include_directories(TritonCPUXsmm

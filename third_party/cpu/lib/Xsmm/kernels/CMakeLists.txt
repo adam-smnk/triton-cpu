@@ -17,12 +17,14 @@ add_custom_command(
 
 add_custom_target(TritonCPUXsmmGenKernels
   DEPENDS
-  ${CMAKE_CURRENT_BINARY_DIR}/XsmmKernels.h
+  ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen/XsmmKernels/XsmmKernels.h
+  ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen/XsmmKernels/XsmmKernels.a
 )
 
 add_custom_command(
   OUTPUT
-  ${CMAKE_CURRENT_BINARY_DIR}/XsmmKernels.h
+  ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen/XsmmKernels/XsmmKernels.h
+  ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen/XsmmKernels/XsmmKernels.a
 
   DEPENDS
   xsmm
@@ -41,18 +43,20 @@ add_custom_command(
   COMMAND ${CMAKE_CURRENT_BINARY_DIR}/xsmm-venv/bin/python ${CMAKE_CURRENT_BINARY_DIR}/bin/libxsmm_staticlib.py -c ${CMAKE_CURRENT_BINARY_DIR}/kernel-config.json -o ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen
 )
 
-file(GLOB XSMM_KERNEL_OBJS CONFIGURE_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/kernel_gen/libxsmm_*.o")
-message(XSMM_KERNEL_OBJS="${XSMM_KERNEL_OBJS}")
-
 add_library(TritonCPUXsmmKernels
   SHARED
-  ${CMAKE_CURRENT_SOURCE_DIR}/Kernels.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/MlirKernelUtils.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/MlirKernelWrappers.cpp
 )
-
-target_link_libraries(TritonCPUXsmmKernels PRIVATE ${XSMM_KERNEL_OBJS})
+target_link_libraries(TritonCPUXsmmKernels
+  PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen/XsmmKernels/XsmmKernels.a
+)
 add_dependencies(TritonCPUXsmmKernels TritonCPUXsmmGenKernels)
 target_include_directories(TritonCPUXsmmKernels
   PUBLIC
-    ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen/XsmmKernels
+  ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen/XsmmKernels
+)
+
+add_triton_library(TritonCPUXsmmKernelUtils
+  KernelUtils.cpp
 )

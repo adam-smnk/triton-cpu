@@ -1,4 +1,4 @@
-//===- Kernels.cpp ----------------------------------------------*- C++ -*-===//
+//===- KernelUtils.cpp ------------------------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,10 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Kernels.h"
+#include "KernelUtils.h"
 
-bool isConfigSupported(ComputeType comp, DataType data, unsigned m, unsigned n,
-                       unsigned k) {
+namespace xsmm {
+namespace kernel {
+
+bool isConfigSupported(ComputeType comp, DataType data, int64_t m, int64_t n,
+                       int64_t k) {
   // Currently all size combinations support all data types - no `data` checks.
   if (comp == ComputeType::GEMM) {
     if (m == 32 && n == 32 && k == 32)
@@ -25,3 +28,6 @@ bool isConfigSupported(ComputeType comp, DataType data, unsigned m, unsigned n,
 
   return false;
 }
+
+} // namespace kernel
+} // namespace xsmm

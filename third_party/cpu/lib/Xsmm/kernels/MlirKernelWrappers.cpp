@@ -1,4 +1,4 @@
-//===- MlirKernelUtils.cpp - Static kernel wrappers for MLIR ----------=---===//
+//===- MlirKernelWrappers.cpp - Static kernel wrappers for MLIR -------=---===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -12,10 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Kernels.h"
-#include <stdint.h>
+#include "XsmmKernels.h"
 #include <assert.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
