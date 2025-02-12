@@ -28,6 +28,7 @@ add_custom_command(
   xsmm
   xsmm-venv.stamp
   xsmm-generator
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel-config.json
 
   # Hack to make static lib script work
   # TODO: Generalize staticlib script to not rely on relative paths for binaries
@@ -36,17 +37,22 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/bin
   COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/third_party/cpu/xsmm-generator ${CMAKE_CURRENT_BINARY_DIR}/bin/libxsmm_binaryexport_generator
   # Generate static kernel objects
-  COMMAND ${CMAKE_CURRENT_BINARY_DIR}/xsmm-venv/bin/python ${CMAKE_CURRENT_BINARY_DIR}/bin/libxsmm_staticlib.py -c ${CMAKE_CURRENT_BINARY_DIR}/kernel-config.json -o ${CMAKE_CURRENT_BINARY_DIR}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen
+  COMMAND ${CMAKE_CURRENT_BINARY_DIR}/xsmm-venv/bin/python ${CMAKE_CURRENT_BINARY_DIR}/bin/libxsmm_staticlib.py -c ${CMAKE_CURRENT_BINARY_DIR}/kernel-config.json -o ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen
 )
 
-file(GLOB XSMM_KERNEL_OBJS CONFIGURE_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/xsmm_*.o")
+file(GLOB XSMM_KERNEL_OBJS CONFIGURE_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/kernel_gen/libxsmm_*.o")
 message(XSMM_KERNEL_OBJS="${XSMM_KERNEL_OBJS}")
 
-add_library(TritonCPUXsmmKernels SHARED ${CMAKE_CURRENT_SOURCE_DIR}/Kernels.cpp)
+add_library(TritonCPUXsmmKernels
+  SHARED
+  ${CMAKE_CURRENT_SOURCE_DIR}/Kernels.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/MlirKernelUtils.cpp
+)
 
 target_link_libraries(TritonCPUXsmmKernels PRIVATE ${XSMM_KERNEL_OBJS})
 add_dependencies(TritonCPUXsmmKernels TritonCPUXsmmGenKernels)
 target_include_directories(TritonCPUXsmmKernels
   PUBLIC
-    ${CMAKE_CURRENT_BINARY_DIR}/XsmmKernels
+    ${CMAKE_CURRENT_BINARY_DIR}/kernel_gen/XsmmKernels
 )
