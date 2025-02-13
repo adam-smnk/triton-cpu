@@ -18,6 +18,8 @@ enum class ComputeType { GEMM, BRGEMM };
 
 enum class DataType { F32, BF16 };
 
+// Returns true if there is a static kernel available for the given
+// configuration.
 bool isConfigSupported(ComputeType comp, DataType data, int64_t m, int64_t n,
                        int64_t k);
 

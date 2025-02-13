@@ -1037,9 +1037,9 @@ buildBrgemmCalls(PatternRewriter &rewriter, Operation *op, ValueRange inputs,
 
     std::string invokeName = posBatch ? "xsmm_brgemm" : "xsmm_gemm";
     invokeName += elemType.isBF16() ? "_bf16" : "_f32";
-    invokeName += "_" + std::to_string(mSize);
-    invokeName += "_" + std::to_string(nSize);
-    invokeName += "_" + std::to_string(kSize);
+    invokeName += "_m" + std::to_string(mSize);
+    invokeName += "_n" + std::to_string(nSize);
+    invokeName += "_k" + std::to_string(kSize);
 
     SmallVector<Value, 6> operandRange;
     for (auto operand : inputs)

@@ -12,7 +12,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "MlirKernelWrappers.h"
 #include "XsmmKernels.h"
+
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -21,25 +23,7 @@
 extern "C" {
 #endif
 
-typedef enum libxsmm_datatype {
-  LIBXSMM_DATATYPE_F64,
-  LIBXSMM_DATATYPE_F32,
-  LIBXSMM_DATATYPE_BF16,
-  LIBXSMM_DATATYPE_F16,
-  LIBXSMM_DATATYPE_BF8,
-  LIBXSMM_DATATYPE_HF8,
-  LIBXSMM_DATATYPE_I64,
-  LIBXSMM_DATATYPE_U64,
-  LIBXSMM_DATATYPE_I32,
-  LIBXSMM_DATATYPE_U32,
-  LIBXSMM_DATATYPE_I16,
-  LIBXSMM_DATATYPE_U16,
-  LIBXSMM_DATATYPE_I8,
-  LIBXSMM_DATATYPE_U8,
-  LIBXSMM_DATATYPE_IMPLICIT,
-  LIBXSMM_DATATYPE_UNSUPPORTED
-} libxsmm_datatype;
-
+// Helper to compute target pointer address.
 static void *get_base_ptr(const libxsmm_datatype dType, void *alignedPtr,
                           int64_t offset) {
   if (dType == LIBXSMM_DATATYPE_F32) {
@@ -56,11 +40,12 @@ static void *get_base_ptr(const libxsmm_datatype dType, void *alignedPtr,
   return nullptr;
 }
 
+// Helper to populate libxsmm GEMM parameters.
 static libxsmm_gemm_param
 getXsmmGemmParam(const libxsmm_datatype dType, const libxsmm_datatype out_dtype,
                  void *alignedPtrA, int64_t offsetA, void *alignedPtrB,
                  int64_t offsetB, void *alignedPtrC, int64_t offsetC,
-                 int64_t lda, int64_t ldb, int64_t ldc, int64_t *numBatches,
+                 int64_t *lda, int64_t *ldb, int64_t *ldc, int64_t *numBatches,
                  int64_t *l_stride_a, int64_t *l_stride_b) {
   libxsmm_gemm_param gemm_param;
 
@@ -71,9 +56,9 @@ getXsmmGemmParam(const libxsmm_datatype dType, const libxsmm_datatype out_dtype,
 
   // Pass LDs at runtime.
   // Switch A with B for col-major.
-  gemm_param.a.quinary = &ldb;
-  gemm_param.b.quinary = &lda;
-  gemm_param.c.quinary = &ldc;
+  gemm_param.a.quinary = (void *)ldb;
+  gemm_param.b.quinary = (void *)lda;
+  gemm_param.c.quinary = (void *)ldc;
 
   if (numBatches) {
     gemm_param.op.tertiary = (void *)numBatches;
@@ -96,7 +81,7 @@ void xsmm_gemm_f32_m32_n32_k32(const libxsmm_datatype dType,
                                int64_t ldb, int64_t ldc) {
   libxsmm_gemm_param gemm_param = getXsmmGemmParam(
       dType, out_dtype, alignedPtrA, offsetA, alignedPtrB, offsetB, alignedPtrC,
-      offsetC, lda, ldb, ldc, NULL, NULL, NULL);
+      offsetC, &lda, &ldb, &ldc, NULL, NULL, NULL);
   libxsmm_gemm_f32_m32_n32_k32(&gemm_param);
 }
 
@@ -108,7 +93,7 @@ void xsmm_gemm_f32_m64_n64_k64(const libxsmm_datatype dType,
                                int64_t ldb, int64_t ldc) {
   libxsmm_gemm_param gemm_param = getXsmmGemmParam(
       dType, out_dtype, alignedPtrA, offsetA, alignedPtrB, offsetB, alignedPtrC,
-      offsetC, lda, ldb, ldc, NULL, NULL, NULL);
+      offsetC, &lda, &ldb, &ldc, NULL, NULL, NULL);
   libxsmm_gemm_f32_m64_n64_k64(&gemm_param);
 }
 
@@ -120,7 +105,7 @@ void xsmm_gemm_f32_m64_n64_k32(const libxsmm_datatype dType,
                                int64_t ldb, int64_t ldc) {
   libxsmm_gemm_param gemm_param = getXsmmGemmParam(
       dType, out_dtype, alignedPtrA, offsetA, alignedPtrB, offsetB, alignedPtrC,
-      offsetC, lda, ldb, ldc, NULL, NULL, NULL);
+      offsetC, &lda, &ldb, &ldc, NULL, NULL, NULL);
   libxsmm_gemm_f32_m64_n64_k32(&gemm_param);
 }
 
@@ -132,7 +117,7 @@ void xsmm_gemm_f32_m64_n64_k512(const libxsmm_datatype dType,
                                 int64_t ldb, int64_t ldc) {
   libxsmm_gemm_param gemm_param = getXsmmGemmParam(
       dType, out_dtype, alignedPtrA, offsetA, alignedPtrB, offsetB, alignedPtrC,
-      offsetC, lda, ldb, ldc, NULL, NULL, NULL);
+      offsetC, &lda, &ldb, &ldc, NULL, NULL, NULL);
   libxsmm_gemm_f32_m64_n64_k512(&gemm_param);
 }
 
@@ -144,7 +129,7 @@ void xsmm_gemm_bf16_m32_n32_k32(const libxsmm_datatype dType,
                                 int64_t ldb, int64_t ldc) {
   libxsmm_gemm_param gemm_param = getXsmmGemmParam(
       dType, out_dtype, alignedPtrA, offsetA, alignedPtrB, offsetB, alignedPtrC,
-      offsetC, lda, ldb, ldc, NULL, NULL, NULL);
+      offsetC, &lda, &ldb, &ldc, NULL, NULL, NULL);
   libxsmm_gemm_bf16_m32_n32_k32(&gemm_param);
 }
 
@@ -156,7 +141,7 @@ void xsmm_gemm_bf16_m64_n64_k64(const libxsmm_datatype dType,
                                 int64_t ldb, int64_t ldc) {
   libxsmm_gemm_param gemm_param = getXsmmGemmParam(
       dType, out_dtype, alignedPtrA, offsetA, alignedPtrB, offsetB, alignedPtrC,
-      offsetC, lda, ldb, ldc, NULL, NULL, NULL);
+      offsetC, &lda, &ldb, &ldc, NULL, NULL, NULL);
   libxsmm_gemm_bf16_m64_n64_k64(&gemm_param);
 }
 
@@ -168,7 +153,7 @@ void xsmm_gemm_bf16_m64_n64_k32(const libxsmm_datatype dType,
                                 int64_t ldb, int64_t ldc) {
   libxsmm_gemm_param gemm_param = getXsmmGemmParam(
       dType, out_dtype, alignedPtrA, offsetA, alignedPtrB, offsetB, alignedPtrC,
-      offsetC, lda, ldb, ldc, NULL, NULL, NULL);
+      offsetC, &lda, &ldb, &ldc, NULL, NULL, NULL);
   libxsmm_gemm_bf16_m64_n64_k32(&gemm_param);
 }
 
@@ -180,7 +165,7 @@ void xsmm_gemm_bf16_m64_n64_k512(const libxsmm_datatype dType,
                                  int64_t lda, int64_t ldb, int64_t ldc) {
   libxsmm_gemm_param gemm_param = getXsmmGemmParam(
       dType, out_dtype, alignedPtrA, offsetA, alignedPtrB, offsetB, alignedPtrC,
-      offsetC, lda, ldb, ldc, NULL, NULL, NULL);
+      offsetC, &lda, &ldb, &ldc, NULL, NULL, NULL);
   libxsmm_gemm_bf16_m64_n64_k512(&gemm_param);
 }
 
@@ -205,7 +190,7 @@ void xsmm_brgemm_f32_m64_n64_k32(
 
   libxsmm_gemm_param gemm_param = getXsmmGemmParam(
       dType, out_dtype, alignedPtrA, offsetA, alignedPtrB, offsetB, alignedPtrC,
-      offsetC, lda, ldb, ldc, &numBatches, &l_stride_a, &l_stride_a);
+      offsetC, &lda, &ldb, &ldc, &numBatches, &l_stride_a, &l_stride_b);
 
   libxsmm_brgemm_f32_m64_n64_k32(&gemm_param);
 }
@@ -231,7 +216,7 @@ void xsmm_brgemm_bf16_m64_n64_k32(
 
   libxsmm_gemm_param gemm_param = getXsmmGemmParam(
       dType, out_dtype, alignedPtrA, offsetA, alignedPtrB, offsetB, alignedPtrC,
-      offsetC, lda, ldb, ldc, &numBatches, &l_stride_a, &l_stride_a);
+      offsetC, &lda, &ldb, &ldc, &numBatches, &l_stride_a, &l_stride_b);
 
   libxsmm_brgemm_bf16_m64_n64_k32(&gemm_param);
 }
