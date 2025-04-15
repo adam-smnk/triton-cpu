@@ -22,13 +22,27 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
+struct ConvertDotOp : public OpRewritePattern<triton::DotOp> {
+  using OpRewritePattern<triton::DotOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::DotOp dotOp,
+                                PatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<linalg::MatmulOp>(
+        dotOp, ValueRange{dotOp.getA(), dotOp.getB()},
+        ValueRange{dotOp.getC()});
+    return success();
+  }
+};
+
 struct ConvertTritonToLinalg
     : public triton::cpu::impl::ConvertTritonToLinalgBase<
           ConvertTritonToLinalg> {
   using ConvertTritonToLinalgBase::ConvertTritonToLinalgBase;
 
   void runOnOperation() override {
-    RewritePatternSet patterns(&getContext());
+    auto *ctx = &getContext();
+    RewritePatternSet patterns(ctx);
+    patterns.add<ConvertDotOp>(ctx);
     populateTritonElementwiseToLinalgPatterns(patterns);
 
     GreedyRewriteConfig config;
