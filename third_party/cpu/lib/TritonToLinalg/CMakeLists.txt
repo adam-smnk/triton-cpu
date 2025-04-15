@@ -1,5 +1,6 @@
 add_triton_library(TritonToLinalg
     ConvertTritonToLinalg.cpp
+    ConvertElementwise.cpp
 
     DEPENDS
     TritonToLinalgPassIncGen

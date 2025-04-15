@@ -18,6 +18,10 @@ namespace cpu {
 #define GEN_PASS_REGISTRATION
 #include "cpu/include/TritonToLinalg/Passes.h.inc"
 
+/// Collect a set of patterns to convert Triton Arith elementwise ops
+/// on tensors to Linalg ops.
+void populateTritonElementwiseToLinalgPatterns(RewritePatternSet &patterns);
+
 } // namespace cpu
 } // namespace triton
 } // namespace mlir

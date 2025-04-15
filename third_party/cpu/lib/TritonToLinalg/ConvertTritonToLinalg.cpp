@@ -29,7 +29,7 @@ struct ConvertTritonToLinalg
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    // populate patterns
+    populateTritonElementwiseToLinalgPatterns(patterns);
 
     GreedyRewriteConfig config;
     config.strictMode = GreedyRewriteStrictness::ExistingOps;
