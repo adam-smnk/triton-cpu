@@ -44,6 +44,7 @@ struct ConvertTritonToLinalg
     RewritePatternSet patterns(ctx);
     patterns.add<ConvertDotOp>(ctx);
     populateTritonElementwiseToLinalgPatterns(patterns);
+    populateTritonReduceToLinalgPatterns(patterns);
 
     GreedyRewriteConfig config;
     config.strictMode = GreedyRewriteStrictness::ExistingOps;
