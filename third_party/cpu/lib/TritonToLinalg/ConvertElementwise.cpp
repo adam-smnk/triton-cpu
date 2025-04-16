@@ -77,11 +77,6 @@ struct ConvertElementwiseOnRankedTensors : public RewritePattern {
       return rewriter.notifyMatchFailure(
           op, "requires elementwise op on ranked tensors");
 
-    std::optional<linalg::ElementwiseKind> eltwiseKind = getElementwiseKind(op);
-    if (!eltwiseKind)
-      return rewriter.notifyMatchFailure(op,
-                                         "could not map to elementwise kind");
-
     auto rank = cast<RankedTensorType>(op->getResult(0).getType()).getRank();
     SmallVector<AffineMap, 3> indexingMaps(
         op->getNumResults() + op->getNumOperands(),
@@ -93,10 +88,37 @@ struct ConvertElementwiseOnRankedTensors : public RewritePattern {
         loc, tensor::getMixedSizes(rewriter, loc, operands.front()),
         cast<RankedTensorType>(resultTypes.front()).getElementType());
 
-    rewriter.replaceOpWithNewOp<linalg::ElementwiseOp>(
-        op, op->getOperands(), ValueRange{output},
-        linalg::ElementwiseKindAttr::get(rewriter.getContext(), *eltwiseKind),
-        rewriter.getAffineMapArrayAttr(indexingMaps));
+    if (auto eltwiseKind = getElementwiseKind(op)) {
+      // Replace with named general eltwise op.
+      rewriter.replaceOpWithNewOp<linalg::ElementwiseOp>(
+          op, operands, ValueRange{output},
+          linalg::ElementwiseKindAttr::get(rewriter.getContext(), *eltwiseKind),
+          rewriter.getAffineMapArrayAttr(indexingMaps));
+      return success();
+    }
+
+    // Generic op fallback to handle currently unsupported eltwise op kinds.
+    SmallVector<utils::IteratorType, 6> iteratorTypes(
+        rank, utils::IteratorType::parallel);
+    rewriter.replaceOpWithNewOp<linalg::GenericOp>(
+        op, /*resultTensorTypes=*/resultTypes,
+        /*inputs=*/operands,
+        /*outputs=*/ValueRange{output},
+        /*indexingMaps=*/indexingMaps,
+        /*iteratorTypes=*/iteratorTypes,
+        /*bodyBuilder=*/
+        [&](OpBuilder &builder, Location loc, ValueRange regionArgs) {
+          auto elementTypes =
+              llvm::to_vector<6>(llvm::map_range(resultTypes, [](Type type) {
+                return cast<TensorType>(type).getElementType();
+              }));
+          auto *scalarOp =
+              builder.create(loc, op->getName().getIdentifier(),
+                              regionArgs.take_front(op->getNumOperands()),
+                              elementTypes, op->getAttrs());
+          builder.create<linalg::YieldOp>(loc, scalarOp->getResults());
+        });
+
     return success();
   }
 };
