@@ -33,6 +33,7 @@
 #include "mlir/Dialect/AMX/AMXDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
+#include "mlir/InitAllDialects.h"
 #include "mlir/InitAllPasses.h"
 
 namespace mlir {
@@ -93,6 +94,27 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::cpu::registerTritonCPUToLLVMPasses();
   mlir::triton::cpu::registerTritonToLinalgPasses();
   mlir::triton::cpu::registerTritonOpScalarizeExternalModels(registry);
+
+  // Upstream external models.
+  mlir::arith::registerBufferDeallocationOpInterfaceExternalModels(registry);
+  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::arith::registerBufferViewFlowOpInterfaceExternalModels(registry);
+  mlir::cf::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::cf::registerBufferDeallocationOpInterfaceExternalModels(registry);
+  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
+      registry);
+  mlir::linalg::registerAllDialectInterfaceImplementations(registry);
+  mlir::linalg::registerRuntimeVerifiableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerFindPayloadReplacementOpInterfaceExternalModels(
+      registry);
+  mlir::tensor::registerInferTypeOpInterfaceExternalModels(registry);
+  mlir::tensor::registerSubsetOpInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerValueBoundsOpInterfaceExternalModels(registry);
+  mlir::vector::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::vector::registerSubsetOpInterfaceExternalModels(registry);
+  mlir::vector::registerValueBoundsOpInterfaceExternalModels(registry);
 
   registry.insert<
       mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
