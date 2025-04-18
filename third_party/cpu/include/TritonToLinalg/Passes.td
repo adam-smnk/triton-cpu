@@ -13,6 +13,7 @@ def ConvertTritonToLinalg : Pass<"triton-cpu-convert-triton-to-linalg"> {
 def ConvertTritonToMemRef : Pass<"triton-cpu-convert-triton-to-memref"> {
     let summary = "Convert Triton ops to MemRef ops.";
     let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::affine::AffineDialect",
                              "mlir::tensor::TensorDialect",
                              "mlir::memref::MemRefDialect",
                              "mlir::bufferization::BufferizationDialect",
