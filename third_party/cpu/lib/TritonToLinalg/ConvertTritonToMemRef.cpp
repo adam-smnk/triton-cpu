@@ -41,10 +41,20 @@ public:
     auto loc = loadOp.getLoc();
 
     auto ptrType = dyn_cast<triton::PointerType>(loadOp.getPtr().getType());
-    if (!ptrType || !isa<TensorType>(ptrType.getPointeeType()))
-      return rewriter.notifyMatchFailure(loadOp,
-                                         "NYI non tensor pointer loads");
+    if (!ptrType)
+      return rewriter.notifyMatchFailure(loadOp, "NYI load tensor of pointers");
 
+    // Load a scalar value.
+    Type pointeeTy = ptrType.getPointeeType();
+    if (!isa<TensorType>(pointeeTy)) {
+      auto scalarCast = rewriter.create<memref::CastOp>(
+          loc, MemRefType::get({}, pointeeTy), adaptor.getPtr());
+      rewriter.replaceOpWithNewOp<memref::LoadOp>(loadOp, pointeeTy, scalarCast,
+                                                  /*indices=*/ValueRange{});
+      return success();
+    }
+
+    // Load a block pointer.
     auto toTensor = rewriter.create<bufferization::ToTensorOp>(
         loc, adaptor.getPtr(), /*restrict=*/true);
 
@@ -69,6 +79,21 @@ public:
     auto loc = storeOp.getLoc();
 
     auto ptrType = dyn_cast<triton::PointerType>(storeOp.getPtr().getType());
+    if (!ptrType)
+      return rewriter.notifyMatchFailure(storeOp,
+                                         "NYI store tensor of pointers");
+
+    // Store a scalar value.
+    Type pointeeTy = ptrType.getPointeeType();
+    if (!isa<TensorType>(pointeeTy)) {
+      auto scalarCast = rewriter.create<memref::CastOp>(
+          loc, MemRefType::get({}, pointeeTy), adaptor.getPtr());
+      rewriter.replaceOpWithNewOp<memref::StoreOp>(storeOp, adaptor.getValue(),
+                                                   scalarCast);
+      return success();
+    }
+
+    // Store a block pointer.
     if (!ptrType || !isa<TensorType>(ptrType.getPointeeType()))
       return rewriter.notifyMatchFailure(storeOp,
                                          "NYI non tensor pointer stores");
