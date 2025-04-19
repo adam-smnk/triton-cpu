@@ -99,12 +99,21 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::arith::registerBufferDeallocationOpInterfaceExternalModels(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::arith::registerBufferViewFlowOpInterfaceExternalModels(registry);
-  mlir::cf::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::cf::registerBufferDeallocationOpInterfaceExternalModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);
+  mlir::builtin::registerCastOpInterfaceExternalModels(registry);
+  mlir::cf::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::cf::registerBufferDeallocationOpInterfaceExternalModels(registry);
   mlir::linalg::registerAllDialectInterfaceImplementations(registry);
   mlir::linalg::registerRuntimeVerifiableOpInterfaceExternalModels(registry);
+  mlir::memref::registerAllocationOpInterfaceExternalModels(registry);
+  mlir::memref::registerBufferViewFlowOpInterfaceExternalModels(registry);
+  mlir::memref::registerRuntimeVerifiableOpInterfaceExternalModels(registry);
+  mlir::memref::registerValueBoundsOpInterfaceExternalModels(registry);
+  mlir::memref::registerMemorySlotExternalModels(registry);
+  mlir::scf::registerBufferDeallocationOpInterfaceExternalModels(registry);
+  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::scf::registerValueBoundsOpInterfaceExternalModels(registry);
   mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerFindPayloadReplacementOpInterfaceExternalModels(
       registry);
