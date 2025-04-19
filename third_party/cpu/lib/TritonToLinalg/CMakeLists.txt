@@ -3,6 +3,8 @@ add_triton_library(TritonToLinalg
     ConvertElementwise.cpp
     ConvertReduce.cpp
     ConvertTritonToMemRef.cpp
+    ConvertTritonToFunc.cpp
+    TypeConverter.cpp
 
     DEPENDS
     TritonToLinalgPassIncGen

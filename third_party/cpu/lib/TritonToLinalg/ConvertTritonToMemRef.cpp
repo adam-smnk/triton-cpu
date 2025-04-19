@@ -1,4 +1,5 @@
 #include "cpu/include/TritonToLinalg/Passes.h"
+#include "cpu/include/TritonToLinalg/TypeConverter.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -6,6 +7,7 @@
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
@@ -14,6 +16,9 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/SetVector.h"
+
+#include "llvm/Support/Debug.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -32,9 +37,104 @@ using namespace mlir::triton::cpu;
 
 namespace {
 
+Operation *getArgDefinitingOp(BlockArgument arg) {
+  if (!arg)
+    return nullptr;
+
+  Operation *parentOp = arg.getOwner()->getParent()->getParentOp();
+  assert(parentOp && "invalid block arg");
+  if (dyn_cast<triton::FuncOp>(parentOp))
+    return parentOp;
+  if (dyn_cast<func::FuncOp>(parentOp))
+    return parentOp;
+  if (auto forOp = dyn_cast<scf::ForOp>(parentOp)) {
+    Value val = forOp.getTiedLoopInit(arg)->get();
+    if (auto parentArg = dyn_cast<BlockArgument>(val))
+      return getArgDefinitingOp(parentArg);
+    return val.getDefiningOp();
+  }
+  return nullptr;
+}
+
+// Get other ptr aliases when possible.
+// Bail out on unknown source.
+Value getAliasingPtr(Operation *op) {
+  if (!op)
+    return nullptr;
+
+  if (auto makeTensorPtr = dyn_cast<triton::MakeTensorPtrOp>(op))
+    return makeTensorPtr.getBase();
+  else if (auto advance = dyn_cast<triton::AdvanceOp>(op))
+    return advance.getPtr();
+  else if (auto addptr = dyn_cast<triton::AddPtrOp>(op))
+    return addptr.getPtr();
+  else
+    return nullptr;
+}
+
+bool isReadOnly(Value rootPtr) {
+  assert(rootPtr && "Invalid root ptr");
+  SmallVector<Value> aliases = {rootPtr};
+  llvm::SmallSetVector<Operation *, 16> visitedOps;
+  while (!aliases.empty()) {
+    Value val = aliases.pop_back_val();
+    Operation *defOp = val.getDefiningOp();
+    if (!defOp)
+      defOp = getArgDefinitingOp(dyn_cast<BlockArgument>(val));
+
+    // Bail out on unknown source.
+    if (!defOp)
+      return false;
+    // Function argument is the terminal definition - look no further.
+    if (!isa<FunctionOpInterface>(defOp)) {
+      Value alias = getAliasingPtr(defOp);
+      if (!alias)
+        return false;
+      aliases.push_back(alias);
+    }
+
+    for (Operation *opUser : val.getUsers()) {
+      if (!visitedOps.insert(opUser))
+        continue;
+      // Function calls have unknown side effects - assume write.
+      // Store op writes memory.
+      // Splat is not handled atm.
+      if (isa<CallOpInterface, triton::StoreOp, triton::SplatOp>(opUser))
+        return false;
+      if (auto forOp = dyn_cast<scf::ForOp>(opUser)) {
+        // Treat iter_arg as an alias and follow into the loop body.
+        Value loopval;
+        for (OpOperand &arg : forOp.getInitsMutable()) {
+          if (arg.get() == val) {
+            loopval = forOp.getTiedLoopRegionIterArg(&arg);
+            break;
+          }
+        }
+        assert(loopval && "failed scf");
+        aliases.push_back(loopval);
+        continue;
+      }
+      if (unsigned numResults = opUser->getNumResults()) {
+        // Lost dependency chain with multiple results - bail out.
+        if (numResults > 1)
+          return false;
+        Value res = opUser->getResult(0);
+        if (isa<triton::PointerType>(res.getType()))
+          aliases.push_back(res);
+      }
+    }
+  }
+
+  return true;
+}
+
 class ConvertLoadOp : public OpConversionPattern<triton::LoadOp> {
 public:
   using OpConversionPattern<triton::LoadOp>::OpConversionPattern;
+
+  ConvertLoadOp(const TypeConverter &typeConverter, MLIRContext *context,
+                int benefit)
+      : OpConversionPattern<triton::LoadOp>(typeConverter, context, benefit) {}
 
   LogicalResult
   matchAndRewrite(triton::LoadOp loadOp, triton::LoadOp::Adaptor adaptor,
@@ -55,16 +155,22 @@ public:
       return success();
     }
 
+    bool createCopy = loadOp.getIsVolatile() || !isReadOnly(loadOp.getPtr());
+
     // Load a block pointer.
-    auto toTensor = rewriter.create<bufferization::ToTensorOp>(
+    Value loadedTensor = rewriter.create<bufferization::ToTensorOp>(
         loc, adaptor.getPtr(), /*restrict=*/true);
 
-    auto empty = rewriter.create<tensor::EmptyOp>(
-        loc, toTensor.getResult().getType(), /*dynamicSizes=*/ValueRange{});
-    auto copy = rewriter.create<linalg::CopyOp>(loc, ValueRange{toTensor},
-                                                ValueRange{empty});
+    if (createCopy) {
+      auto empty = rewriter.create<tensor::EmptyOp>(
+          loc, loadedTensor.getType(), /*dynamicSizes=*/ValueRange{});
+      loadedTensor = rewriter
+                         .create<linalg::CopyOp>(loc, ValueRange{loadedTensor},
+                                                 ValueRange{empty})
+                         .getResultTensors()[0];
+    }
 
-    rewriter.replaceOp(loadOp, copy);
+    rewriter.replaceOp(loadOp, loadedTensor);
 
     return success();
   }
@@ -213,126 +319,35 @@ struct ConvertTritonToMemRef
           ConvertTritonToMemRef> {
   using ConvertTritonToMemRefBase::ConvertTritonToMemRefBase;
 
-  // Function conversion from triton-shared.
-  static auto constexpr LAUNCH_GRID_RANK = getMaxEnumValForProgramIDDim() + 1;
-  static unsigned int constexpr TRITON_PROGRAM_INFO_ARG_COUNT =
-      LAUNCH_GRID_RANK * 2;
-  // Add additional I32 arguments to represent:
-  // - num_programs, 3 in total, one for each axis of the launch grid
-  // - program_id, 3 in total, one for each axis of the launch grid
-  static void addProgramInfo(triton::FuncOp func) {
-    OpBuilder b(func);
-
-    auto origFuncType = func.getFunctionType();
-    auto origInputTypes = origFuncType.getInputs();
-    SmallVector<Type> newInputTypes(origInputTypes);
-    newInputTypes.append(TRITON_PROGRAM_INFO_ARG_COUNT, b.getI32Type());
-
-    auto newFuncType =
-        b.getFunctionType(newInputTypes, origFuncType.getResults());
-
-    func.setFunctionType(newFuncType);
-
-    // Add empty attributes for each new argument if needed
-    if (func.getAllArgAttrs()) {
-      SmallVector<DictionaryAttr> newArgAttrs;
-      func.getAllArgAttrs(newArgAttrs);
-      newArgAttrs.append(TRITON_PROGRAM_INFO_ARG_COUNT, DictionaryAttr());
-      func.setAllArgAttrs(newArgAttrs);
-    }
-
-    // Add the corresponding arguments to function body
-    for (unsigned int i = 0; i < TRITON_PROGRAM_INFO_ARG_COUNT; i++) {
-      func.getBody().front().addArgument(b.getI32Type(), func.getLoc());
-    }
-  }
-
   void runOnOperation() override {
-    auto moduleOp = getOperation();
     auto *ctx = &getContext();
 
-    TypeConverter converter;
-    converter.addConversion([](Type type) { return type; });
-    converter.addConversion([ctx](triton::PointerType ptrType) -> Type {
-      auto tensorTy = dyn_cast<TensorType>(ptrType.getPointeeType());
-      if (!tensorTy)
-        return UnrankedMemRefType::get(ptrType.getPointeeType(),
-                                       /*memorySpace=*/0);
-      auto layout = StridedLayoutAttr::get(
-          ctx, ShapedType::kDynamic,
-          SmallVector<int64_t>(tensorTy.getRank(), ShapedType::kDynamic));
-      return MemRefType::get(tensorTy.getShape(), tensorTy.getElementType(),
-                             layout);
-    });
-    auto createUnrealizedCast = [&](OpBuilder &builder, Type resultType,
-                                    ValueRange inputs, Location loc) -> Value {
-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
-          .getResult(0);
-    };
-    converter.addSourceMaterialization(createUnrealizedCast);
-    converter.addTargetMaterialization(createUnrealizedCast);
+    TritonTypeConverter converter(ctx);
 
     ConversionTarget target(*ctx);
     target.addLegalDialect<memref::MemRefDialect, tensor::TensorDialect,
                            linalg::LinalgDialect, arith::ArithDialect,
                            affine::AffineDialect, func::FuncDialect,
                            bufferization::BufferizationDialect>();
-    // Update function signature and call ops to use memrefs
-    target.addDynamicallyLegalOp<func::FuncOp, triton::FuncOp>([&](auto op) {
-      return converter.isSignatureLegal(
-          cast<FunctionType>(cast<FunctionOpInterface>(op).getFunctionType()));
-    });
-    target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
-      return converter.isLegal(op.getResultTypes()) &&
-             converter.isLegal(op.getOperandTypes());
-    });
     // config illegal ops
 
     RewritePatternSet patterns(ctx);
-    scf::populateSCFStructuralTypeConversionsAndLegality(converter, patterns,
-                                                         target);
-    populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
-                                                                   converter);
-    populateFunctionOpInterfaceTypeConversionPattern<triton::FuncOp>(patterns,
-                                                                     converter);
-    populateCallOpTypeConversionPattern(patterns, converter);
-    patterns.add<ConvertLoadOp, ConvertStoreOp, ConvertMakeTensorPtrOp,
-                 ConvertAdvanceOp>(converter, ctx);
+    patterns.add<ConvertLoadOp>(converter, ctx, /*benefit=*/10);
+    patterns.add<ConvertStoreOp, ConvertMakeTensorPtrOp, ConvertAdvanceOp>(
+        converter, ctx);
 
-    moduleOp.walk([&](triton::FuncOp func) { addProgramInfo(func); });
-
-    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns))))
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns))))
       return signalPassFailure();
 
-    // Convert tt.func and tt.return into func's counterparts
-    moduleOp.walk([&](triton::FuncOp func) {
-      OpBuilder builder(func);
-
-      auto name = func.getName();
-      auto type = func.getFunctionType();
-
-      SmallVector<DictionaryAttr> argAttrs, resAttrs;
-      func.getAllArgAttrs(argAttrs);
-      func.getAllResultAttrs(resAttrs);
-
-      auto funcFunc = builder.create<func::FuncOp>(func.getLoc(), name, type);
-      funcFunc.setAllArgAttrs(argAttrs);
-      funcFunc.setAllResultAttrs(resAttrs);
-
-      auto &funcFuncBody = funcFunc.getBody();
-      auto &funcBody = func.getBody();
-
-      IRMapping map;
-      funcBody.cloneInto(&funcFuncBody, map);
-
-      for (Block &block : funcFuncBody.getBlocks()) {
-        auto term = block.getTerminator();
-        builder.setInsertionPoint(term);
-        builder.create<func::ReturnOp>(func.getLoc(), term->getOperands());
-        term->erase();
-      }
-      func.erase();
-    });
+    RewritePatternSet scfPatterns(ctx);
+    ConversionTarget scfTarget(*ctx);
+    scfTarget.addLegalDialect<scf::SCFDialect>();
+    scf::populateSCFStructuralTypeConversionsAndLegality(converter, scfPatterns,
+                                                         scfTarget);
+    if (failed(applyPartialConversion(getOperation(), scfTarget,
+                                      std::move(scfPatterns))))
+      return signalPassFailure();
   }
 };
 
