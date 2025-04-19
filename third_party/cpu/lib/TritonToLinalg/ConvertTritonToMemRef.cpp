@@ -3,6 +3,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
@@ -213,6 +214,7 @@ struct ConvertTritonToMemRef
   using ConvertTritonToMemRefBase::ConvertTritonToMemRefBase;
 
   void runOnOperation() override {
+    auto moduleOp = getOperation();
     auto *ctx = &getContext();
 
     TypeConverter converter;
@@ -239,19 +241,62 @@ struct ConvertTritonToMemRef
     ConversionTarget target(*ctx);
     target.addLegalDialect<memref::MemRefDialect, tensor::TensorDialect,
                            linalg::LinalgDialect, arith::ArithDialect,
-                           affine::AffineDialect,
+                           affine::AffineDialect, func::FuncDialect,
                            bufferization::BufferizationDialect>();
+    // Update function signature and call ops to use memrefs
+    target.addDynamicallyLegalOp<func::FuncOp, triton::FuncOp>([&](auto op) {
+      return converter.isSignatureLegal(
+          cast<FunctionType>(cast<FunctionOpInterface>(op).getFunctionType()));
+    });
+    target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
+      return converter.isLegal(op.getResultTypes()) &&
+             converter.isLegal(op.getOperandTypes());
+    });
     // config illegal ops
 
     RewritePatternSet patterns(ctx);
-    mlir::scf::populateSCFStructuralTypeConversionsAndLegality(
-        converter, patterns, target);
+    scf::populateSCFStructuralTypeConversionsAndLegality(converter, patterns,
+                                                         target);
+    populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
+                                                                   converter);
+    populateFunctionOpInterfaceTypeConversionPattern<triton::FuncOp>(patterns,
+                                                                     converter);
+    populateCallOpTypeConversionPattern(patterns, converter);
     patterns.add<ConvertLoadOp, ConvertStoreOp, ConvertMakeTensorPtrOp,
                  ConvertAdvanceOp>(converter, ctx);
 
-    if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns))))
+    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns))))
       return signalPassFailure();
+
+    // Convert tt.func and tt.return into func's counterparts
+    moduleOp.walk([&](triton::FuncOp func) {
+      OpBuilder builder(func);
+
+      auto name = func.getName();
+      auto type = func.getFunctionType();
+
+      SmallVector<DictionaryAttr> argAttrs, resAttrs;
+      func.getAllArgAttrs(argAttrs);
+      func.getAllResultAttrs(resAttrs);
+
+      auto funcFunc = builder.create<func::FuncOp>(func.getLoc(), name, type);
+      funcFunc.setAllArgAttrs(argAttrs);
+      funcFunc.setAllResultAttrs(resAttrs);
+
+      auto &funcFuncBody = funcFunc.getBody();
+      auto &funcBody = func.getBody();
+
+      IRMapping map;
+      funcBody.cloneInto(&funcFuncBody, map);
+
+      for (Block &block : funcFuncBody.getBlocks()) {
+        auto term = block.getTerminator();
+        builder.setInsertionPoint(term);
+        builder.create<func::ReturnOp>(func.getLoc(), term->getOperands());
+        term->erase();
+      }
+      func.erase();
+    });
   }
 };
 
