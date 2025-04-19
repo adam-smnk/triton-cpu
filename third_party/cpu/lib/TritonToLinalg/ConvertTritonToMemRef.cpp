@@ -213,6 +213,40 @@ struct ConvertTritonToMemRef
           ConvertTritonToMemRef> {
   using ConvertTritonToMemRefBase::ConvertTritonToMemRefBase;
 
+  // Function conversion from triton-shared.
+  static auto constexpr LAUNCH_GRID_RANK = getMaxEnumValForProgramIDDim() + 1;
+  static unsigned int constexpr TRITON_PROGRAM_INFO_ARG_COUNT =
+      LAUNCH_GRID_RANK * 2;
+  // Add additional I32 arguments to represent:
+  // - num_programs, 3 in total, one for each axis of the launch grid
+  // - program_id, 3 in total, one for each axis of the launch grid
+  static void addProgramInfo(triton::FuncOp func) {
+    OpBuilder b(func);
+
+    auto origFuncType = func.getFunctionType();
+    auto origInputTypes = origFuncType.getInputs();
+    SmallVector<Type> newInputTypes(origInputTypes);
+    newInputTypes.append(TRITON_PROGRAM_INFO_ARG_COUNT, b.getI32Type());
+
+    auto newFuncType =
+        b.getFunctionType(newInputTypes, origFuncType.getResults());
+
+    func.setFunctionType(newFuncType);
+
+    // Add empty attributes for each new argument if needed
+    if (func.getAllArgAttrs()) {
+      SmallVector<DictionaryAttr> newArgAttrs;
+      func.getAllArgAttrs(newArgAttrs);
+      newArgAttrs.append(TRITON_PROGRAM_INFO_ARG_COUNT, DictionaryAttr());
+      func.setAllArgAttrs(newArgAttrs);
+    }
+
+    // Add the corresponding arguments to function body
+    for (unsigned int i = 0; i < TRITON_PROGRAM_INFO_ARG_COUNT; i++) {
+      func.getBody().front().addArgument(b.getI32Type(), func.getLoc());
+    }
+  }
+
   void runOnOperation() override {
     auto moduleOp = getOperation();
     auto *ctx = &getContext();
@@ -264,6 +298,8 @@ struct ConvertTritonToMemRef
     populateCallOpTypeConversionPattern(patterns, converter);
     patterns.add<ConvertLoadOp, ConvertStoreOp, ConvertMakeTensorPtrOp,
                  ConvertAdvanceOp>(converter, ctx);
+
+    moduleOp.walk([&](triton::FuncOp func) { addProgramInfo(func); });
 
     if (failed(applyPartialConversion(moduleOp, target, std::move(patterns))))
       return signalPassFailure();
