@@ -314,6 +314,59 @@ public:
   }
 };
 
+class LinkTensorIterArgs : public OpRewritePattern<scf::ForOp> {
+public:
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    auto loc = forOp.getLoc();
+
+    SmallVector<OpOperand *> tensors;
+    for (OpOperand &arg : forOp.getInitsMutable()) {
+      if (!isa<TensorType>(arg.get().getType()))
+        continue;
+      BlockArgument bodyVal = forOp.getTiedLoopRegionIterArg(&arg);
+      if (llvm::any_of(bodyVal.getUsers(), [](Operation *user) {
+            return isa<tensor::ExtractSliceOp>(user);
+          }))
+        continue;
+      tensors.push_back(&arg);
+    }
+
+    if (!tensors.size())
+      return rewriter.notifyMatchFailure(forOp, "no changes needed");
+
+    for (OpOperand *tensorArg : tensors) {
+      BlockArgument bodyVal = forOp.getTiedLoopRegionIterArg(tensorArg);
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(forOp.getBody());
+      auto argTy = dyn_cast<TensorType>(bodyVal.getType());
+      SmallVector<OpFoldResult> offsets(argTy.getRank(),
+                                        rewriter.getIndexAttr(0));
+      SmallVector<OpFoldResult> sizes;
+      for (auto size : argTy.getShape())
+        sizes.push_back(rewriter.getIndexAttr(size));
+      SmallVector<OpFoldResult> strides(argTy.getRank(),
+                                        rewriter.getIndexAttr(1));
+      auto extractSlice = rewriter.create<tensor::ExtractSliceOp>(
+          loc, bodyVal, offsets, sizes, strides);
+      bodyVal.replaceUsesWithIf(extractSlice.getResult(), [&](OpOperand &use) {
+        return use.getOwner() != extractSlice;
+      });
+
+      OpOperand *yieldVal = forOp.getTiedLoopYieldedValue(bodyVal);
+      rewriter.setInsertionPoint(yieldVal->getOwner());
+      auto insertSlice = rewriter.create<tensor::InsertSliceOp>(
+          loc, yieldVal->get(), bodyVal, offsets, sizes, strides);
+      yieldVal->assign(insertSlice.getResult());
+    }
+
+    return success();
+  }
+};
+
 struct ConvertTritonToMemRef
     : public triton::cpu::impl::ConvertTritonToMemRefBase<
           ConvertTritonToMemRef> {
@@ -321,6 +374,15 @@ struct ConvertTritonToMemRef
 
   void runOnOperation() override {
     auto *ctx = &getContext();
+
+    // RewritePatternSet tensorPatterns(ctx);
+    // tensorPatterns.add<LinkTensorIterArgs>(ctx);
+    // GreedyRewriteConfig config;
+    // config.strictMode = GreedyRewriteStrictness::ExistingOps;
+    // if (failed(mlir::applyPatternsGreedily(getOperation(),
+    //                                        std::move(tensorPatterns),
+    //                                        config)))
+    //   return signalPassFailure();
 
     TritonTypeConverter converter(ctx);
 
