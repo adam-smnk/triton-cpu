@@ -16,6 +16,7 @@ def ConvertTritonToMemRef : Pass<"triton-cpu-convert-triton-to-memref"> {
                              "mlir::affine::AffineDialect",
                              "mlir::tensor::TensorDialect",
                              "mlir::memref::MemRefDialect",
+                             "mlir::scf::SCFDialect",
                              "mlir::func::FuncDialect",
                              "mlir::bufferization::BufferizationDialect",
                              "mlir::linalg::LinalgDialect"];
@@ -26,6 +27,16 @@ def ConvertTritonToFunc : Pass<"triton-cpu-convert-triton-to-func", "mlir::Modul
     let dependentDialects = ["mlir::tensor::TensorDialect",
                              "mlir::memref::MemRefDialect",
                              "mlir::func::FuncDialect"];
+}
+
+def ConvertTritonToVector : Pass<"triton-cpu-convert-triton-to-vector"> {
+    let summary = "Convert Triton ops to MemRef ops.";
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::affine::AffineDialect",
+                             "mlir::memref::MemRefDialect",
+                             "mlir::scf::SCFDialect",
+                             "mlir::func::FuncDialect",
+                             "mlir::vector::VectorDialect"];
 }
 
 #endif // TRITONTOLINALG_CONVERSION_PASSES

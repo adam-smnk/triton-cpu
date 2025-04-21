@@ -4,6 +4,7 @@ add_triton_library(TritonToLinalg
     ConvertReduce.cpp
     ConvertTritonToMemRef.cpp
     ConvertTritonToFunc.cpp
+    ConvertTritonToVector.cpp
     TypeConverter.cpp
 
     DEPENDS
